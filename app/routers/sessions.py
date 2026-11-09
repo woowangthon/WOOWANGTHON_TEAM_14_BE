@@ -1,3 +1,153 @@
-from fastapi import APIRouter
+"""엔드포인트 (CLAUDE.md §4). 현재 1~4 구현.
+
+에러는 항상 본문의 {"error": {"code", "message"}}로 돌려주고 HTTP 200을 유지한다(세션 없음만 404).
+"""
+from typing import Optional
+
+from fastapi import APIRouter, File, UploadFile
+from fastapi.responses import JSONResponse
+
+from app import db
+from app.models import ItemsPatch, SessionCreate, new_session_data
+from app.parsers.docs import parse_doc
+from app.parsers.kakao import parse_kakao
+from app.services import facts as facts_service
+from app.services import items as items_service
 
 router = APIRouter(prefix="/sessions")
+
+
+def _err(code: str, message: str) -> dict:
+    return {"code": code, "message": message[:300]}
+
+
+def _not_found(session_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={"error": _err("session_not_found", f"세션을 찾을 수 없습니다: {session_id}")},
+    )
+
+
+def _with_error(body: dict, error: Optional[dict]) -> dict:
+    if error:
+        body["error"] = error
+    return body
+
+
+# 1
+@router.post("")
+def create_session(body: SessionCreate):
+    session_id = db.create_session(new_session_data(body.model_dump()))
+    return {"session_id": session_id}
+
+
+# 2
+@router.post("/{session_id}/docs")
+def upload_docs(session_id: str, file: Optional[UploadFile] = File(None)):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    if file is None:
+        return {"items": data["items"], "error": _err("no_file", "file 필드에 PDF 또는 TXT를 올려주세요.")}
+
+    try:
+        sentences = parse_doc(file.filename or "", file.file.read())
+    except ValueError as e:
+        return {"items": data["items"], "error": _err("doc_parse_failed", str(e))}
+    except Exception as e:  # 깨진 PDF 등
+        return {"items": data["items"], "error": _err("doc_parse_failed", f"문서를 읽지 못했습니다: {type(e).__name__}")}
+
+    try:
+        items, evidence, error = items_service.extract_items(sentences)
+    except Exception as e:
+        items, evidence, error = [], {}, _err("items_failed", f"{type(e).__name__}: {e}")
+
+    # 문서를 새로 올리면 항목부터 다시 만든다.
+    data["doc_sentences"] = sentences
+    data["items"] = items
+    data["meta"]["item_evidence"] = evidence
+    db.save_session(session_id, data)
+    return _with_error({"items": items}, error)
+
+
+# 3
+@router.patch("/{session_id}/items")
+def patch_items(session_id: str, body: ItemsPatch):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+
+    by_id = {it["id"]: it for it in data["items"]}
+    evidence = data["meta"].setdefault("item_evidence", {})
+    problems: list[str] = []
+    removed: set[str] = set()
+
+    # 수정 → 병합 → 삭제 순서로 적용한다.
+    for p in body.items:
+        item = by_id.get(p.id)
+        if item is None:
+            problems.append(f"{p.id}: 없는 항목")
+            continue
+        if p.title is not None and p.title.strip():
+            item["title"] = p.title.strip()
+        if p.keywords is not None:
+            item["keywords"] = items_service.clean_keywords(p.keywords)
+
+    for p in body.items:
+        if not p.merge_into or p.id not in by_id:
+            continue
+        target = by_id.get(p.merge_into)
+        if target is None or p.merge_into == p.id or p.merge_into in removed or p.id in removed:
+            problems.append(f"{p.id}: {p.merge_into}(으)로 병합할 수 없음")
+            continue
+        source = by_id[p.id]
+        target["keywords"] = items_service.clean_keywords(target["keywords"] + source["keywords"])
+        seen = {f["id"] for f in target["facts"]}
+        target["facts"] += [f for f in source["facts"] if f["id"] not in seen]
+        evidence[target["id"]] = list(dict.fromkeys(evidence.get(target["id"], []) + evidence.get(p.id, [])))
+        removed.add(p.id)
+
+    for p in body.items:
+        if p.delete and p.id in by_id:
+            removed.add(p.id)
+
+    data["items"] = [it for it in data["items"] if it["id"] not in removed]
+    for item_id in removed:
+        evidence.pop(item_id, None)
+    db.save_session(session_id, data)
+
+    error = _err("item_patch_partial", "; ".join(problems)) if problems else None
+    return _with_error({"items": data["items"]}, error)
+
+
+# 4
+@router.post("/{session_id}/chat")
+def upload_chat(session_id: str, file: Optional[UploadFile] = File(None)):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    items = data["items"]
+    if file is None:
+        return {"items": items, "chat_count": len(data["chat"]),
+                "error": _err("no_file", "file 필드에 카톡 txt를 올려주세요.")}
+
+    try:
+        chat = parse_kakao(file.file.read())
+    except Exception as e:
+        return {"items": items, "chat_count": 0,
+                "error": _err("chat_parse_failed", f"대화 파일을 읽지 못했습니다: {type(e).__name__}")}
+
+    data["chat"] = chat
+    if not chat:
+        error = _err("chat_empty", "대화에서 메시지를 찾지 못했습니다. 카카오톡 '대화 내보내기' txt인지 확인해주세요.")
+    elif not items:
+        error = _err("no_items", "업무 항목이 없습니다. 먼저 문서를 올려 항목을 만들어주세요.")
+    else:
+        try:
+            error = facts_service.extract_facts(items, chat)
+        except Exception as e:
+            error = _err("facts_failed", f"{type(e).__name__}: {e}")
+        # TODO(11/10): services.elements로 6요소 판정 → score 계산 → rank_items 정렬
+
+    db.save_session(session_id, data)
+    return _with_error({"items": items, "chat_count": len(chat)}, error)
