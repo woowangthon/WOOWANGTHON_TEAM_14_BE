@@ -31,7 +31,7 @@ def prompt_version() -> str:
 
 
 def _env(*names: str, default: str = "") -> str:
-    """여러 이름 중 먼저 값이 있는 것. 배포(Render)는 OPENAI_*/MODEL_NAME, CLAUDE.md §2의 LLM_*도 그대로 받는다."""
+    """여러 이름 중 먼저 값이 있는 것. 정식 이름은 CLAUDE.md §2의 LLM_*; OPENAI_*/MODEL_NAME은 호환용 별칭."""
     for n in names:
         v = (os.getenv(n) or "").strip()
         if v:
@@ -40,15 +40,15 @@ def _env(*names: str, default: str = "") -> str:
 
 
 def api_key() -> str:
-    return _env("OPENAI_API_KEY", "LLM_API_KEY")
+    return _env("LLM_API_KEY", "OPENAI_API_KEY")
 
 
 def model_name() -> str:
-    return _env("MODEL_NAME", "LLM_MODEL", default="gpt-4o-mini")
+    return _env("LLM_MODEL", "MODEL_NAME", default="gpt-4o-mini")
 
 
 def base_url() -> Optional[str]:
-    return _env("OPENAI_BASE_URL", "LLM_BASE_URL") or None
+    return _env("LLM_BASE_URL", "OPENAI_BASE_URL") or None
 
 
 def _error(code: str, message: str) -> dict:
@@ -77,7 +77,7 @@ def call_json(
     """
     key = api_key()
     if not key:
-        return None, _error("llm_no_key", "OPENAI_API_KEY(또는 LLM_API_KEY)가 설정되지 않았습니다(.env 확인).")
+        return None, _error("llm_no_key", "LLM_API_KEY가 설정되지 않았습니다(.env 확인).")
 
     try:
         system = (PROMPTS_DIR / f"{prompt_name}.md").read_text(encoding="utf-8")

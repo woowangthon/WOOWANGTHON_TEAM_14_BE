@@ -1,4 +1,4 @@
-# Render Blueprint. 이 저장소는 BE 전용이라 Root Directory는 저장소 루트(비워 둠)다.
+# Render Blueprint. 이 저장소는 BE 전용이라 Root Directory는 저장소 루트(비워 둠)다. (사양의 `be/` = 이 루트)
 services:
   - type: web
     name: bbajin-page-be
@@ -10,13 +10,13 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.0"
-      - key: OPENAI_API_KEY
+      - key: LLM_API_KEY
         sync: false            # 대시보드에서 직접 입력
-      - key: OPENAI_BASE_URL
-        value: ""
-      - key: MODEL_NAME
+      - key: LLM_MODEL
         value: gpt-4o-mini
-      - key: FRONTEND_ORIGINS
+      - key: LLM_BASE_URL
+        value: ""
+      - key: FE_ORIGIN
         value: http://localhost:5173   # 배포 후 Vercel 도메인을 쉼표로 추가
       - key: DB_PATH
         value: ./data/app.db

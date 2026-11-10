@@ -284,4 +284,4 @@ def list_forwarded(session_id: str):
     data = db.get_session(session_id)
     if data is None:
         return _not_found(session_id)
-    return {"forwarded": data["forwarded"]}
+    return {"questions": data["forwarded"]}

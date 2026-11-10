@@ -16,8 +16,8 @@ app = FastAPI(title="빠진 페이지 BE")
 
 
 def _origins() -> list[str]:
-    """FRONTEND_ORIGINS(쉼표 구분). 기본 http://localhost:5173. '*'는 쓰지 않는다. (FE_ORIGIN은 옛 이름, 호환용)"""
-    raw = os.getenv("FRONTEND_ORIGINS") or os.getenv("FE_ORIGIN") or "http://localhost:5173"
+    """FE_ORIGIN(쉼표 구분 여러 개). 기본 http://localhost:5173. '*'는 쓰지 않는다. (FRONTEND_ORIGINS는 호환용 별칭)"""
+    raw = os.getenv("FE_ORIGIN") or os.getenv("FRONTEND_ORIGINS") or "http://localhost:5173"
     origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip() and o.strip() != "*"]
     return list(dict.fromkeys(origins)) or ["http://localhost:5173"]
 
@@ -51,7 +51,7 @@ def _unexpected(request: Request, exc: Exception):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "status": "ok", "version": llm.prompt_version(), "model": llm.model_name()}
+    return {"ok": True, "prompt_version": llm.prompt_version(), "model": llm.model_name(), "status": "ok"}
 
 
 app.include_router(sessions.router)
