@@ -140,7 +140,8 @@ def check_facts(items):  # §7-2
     return facts
 
 
-def test_flow_fake_llm(client, monkeypatch):
+def test_full_flow_fake_llm(client, monkeypatch):
+    """§7의 1~8 전부를 한 흐름(1→2→3→4→5→6→7→8→9→10→11)으로. LLM은 가짜 응답."""
     monkeypatch.setattr(llm, "call_json", fake_call_json)
     sid = new_session(client)
 
@@ -310,6 +311,31 @@ def test_flow_no_key_keeps_structure(client, monkeypatch):  # §7-8
     qa = client.post(f"/sessions/{sid}/ask", json={"question": "회비"}).json()
     assert qa["hits"] == [] and qa["summary"] is None and qa["none"] is True and qa["error"]["code"] == "NOT_PUBLISHED"
 
+    # 나머지 엔드포인트도 항목이 없는 상태에서 전부 200 (§7-8: 어떤 단계도 500 없음)
+    r = client.patch(f"/sessions/{sid}/items/item_01/elements/시기", json={"state": "해당없음", "closed_by": "전임"})
+    assert r.status_code == 200 and r.json()["error"]["code"] == "item_not_found"
+    r = client.post(f"/sessions/{sid}/answers", json={"answers": [{"question_id": "q_01", "text": "충분히 긴 답변입니다."}]})
+    assert r.status_code == 200 and r.json()["annotations"] == [] and "q_01" in r.json()["error"]["message"]
+    assert client.patch(f"/sessions/{sid}/annotations/an_001", json={"status": "approved"}).json()["error"]["code"] == "annotation_not_found"
+    doc = client.post(f"/sessions/{sid}/publish").json()["document"]
+    assert doc["items"] == [] and doc["notice"].endswith("승인된 기록이 없습니다.")
+    assert client.post(f"/sessions/{sid}/ask", json={"question": "회비"}).json() == {"hits": [], "summary": None, "none": True}
+    assert client.post(f"/sessions/{sid}/ask/forward", json={"question": "회비는요"}).json() == {"forwarded": True}
+    assert len(client.get(f"/sessions/{sid}/forwarded").json()["forwarded"]) == 1
+
+
+def test_unexpected_exception_is_200_internal(client, monkeypatch):
+    """라우터 안에서 터진 예외는 {"error": {"code": "INTERNAL"}} + 200."""
+    from app import db
+
+    def boom(session_id):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(db, "get_session", boom)
+    r = client.get("/sessions/any/questions")
+    assert r.status_code == 200
+    assert r.json()["error"]["code"] == "INTERNAL" and "disk on fire" in r.json()["error"]["message"]
+
 
 def test_facts_llm_failure_keeps_items(client, monkeypatch):  # §7-8
     def items_ok_facts_fail(prompt_name, payload, schema, retries=1):
@@ -364,15 +390,49 @@ def test_elements_reject_not_applicable_from_llm(client, monkeypatch):
     assert [it["id"] for it in es.rank_items([{"id": "a", "score": 1, "elements": {}}, {"id": "b", "score": 3, "elements": {}}])] == ["b", "a"]
 
 
+@pytest.mark.llm
 @pytest.mark.skipif(not HAS_KEY, reason="LLM_API_KEY 없음: 실제 호출 검사는 건너뜀")
-def test_flow_real_llm(client):  # §7-1, §7-2
+def test_full_flow_real_llm(client):
+    """실제 LLM으로 §7의 1~8. `pytest -m llm` 으로만 돈다."""
     sid = new_session(client)
     body = upload(client, sid, "docs", "rules.txt")
     assert "error" not in body, body.get("error")
     check_items(body["items"])
+
     body = upload(client, sid, "chat", "kakao.txt")
     assert "error" not in body, body.get("error")
     check_facts(body["items"])
+    check_elements(body["items"])
+    scores = [it["score"] for it in body["items"]]
+    assert scores == sorted(scores, reverse=True)
+
+    qs = client.get(f"/sessions/{sid}/questions").json()
+    assert "error" not in qs, qs.get("error")
+    check_cards(qs)
+    assert len(qs["cards"]) >= 1 and all("fallback" not in q for q in qs["cards"]), "카드가 템플릿으로 대체됨"
+
+    answers = [
+        "매월 25일까지 동아리 계좌로 받고, 미납자는 총무가 개별 톡으로 연락합니다. 두 달 넘으면 운영진 회의에 올립니다.",
+        "체육시설과 담당 주무관에게 메일을 먼저 보내고 다음 날 전화로 접수됐는지 확인합니다. 작년에 메일만 보냈다가 접수가 안 된 적이 있어요.",
+        "대회 2주 전에 참가자 명단을 확정하고, 참가비는 회비 계좌로 함께 받습니다. 신청서는 학생지원팀에 운영진이 일괄 제출합니다.",
+    ]
+    r = client.post(f"/sessions/{sid}/answers", json={"answers": [
+        {"question_id": q["id"], "text": a} for q, a in zip(qs["cards"], answers)]})
+    anns = r.json()["annotations"]
+    assert "error" not in r.json(), r.json().get("error")
+    assert len(anns) >= 3 and all(a["status"] == "draft" and a["source"]["type"] == "전임답변" for a in anns)
+
+    for a in anns[:2]:
+        client.patch(f"/sessions/{sid}/annotations/{a['id']}", json={"status": "approved"})
+    doc = client.post(f"/sessions/{sid}/publish").json()["document"]
+    published = [a for it in doc["items"] for a in it["annotations"]]
+    assert [a["id"] for a in published] == [a["id"] for a in anns[:2]]
+
+    word = next(t for t in __import__("app.services.qa", fromlist=["tokenize"]).tokenize(published[0]["text"]))
+    qa = client.post(f"/sessions/{sid}/ask", json={"question": f"{word} 어떻게 해요?"}).json()
+    assert qa["none"] is False and len(qa["hits"]) >= 1
+    qa = client.post(f"/sessions/{sid}/ask", json={"question": "우주선 발사 일정"}).json()
+    assert qa == {"hits": [], "summary": None, "none": True}
 
 
 def test_session_not_found(client):

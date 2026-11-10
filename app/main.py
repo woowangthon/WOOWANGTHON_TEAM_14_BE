@@ -39,7 +39,7 @@ def _invalid_request(request: Request, exc: RequestValidationError):
 def _unexpected(request: Request, exc: Exception):
     return JSONResponse(
         status_code=200,
-        content={"error": {"code": "internal_error", "message": f"{type(exc).__name__}: {exc}"[:300]}},
+        content={"error": {"code": "INTERNAL", "message": f"{type(exc).__name__}: {exc}"[:300]}},
     )
 
 

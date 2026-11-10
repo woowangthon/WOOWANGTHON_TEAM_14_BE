@@ -2,6 +2,7 @@
 
 에러는 항상 본문의 {"error": {"code", "message"}}로 돌려주고 HTTP 200을 유지한다(세션 없음만 404).
 """
+import functools
 from typing import Optional
 
 from fastapi import APIRouter, File, UploadFile
@@ -27,6 +28,17 @@ def _err(code: str, message: str) -> dict:
     return {"code": code, "message": message[:300]}
 
 
+def guarded(fn):
+    """예상 못 한 예외도 500 대신 200 + {"error": {"code": "INTERNAL"}}로 돌려준다."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            return {"error": _err("INTERNAL", f"{type(e).__name__}: {e}")}
+    return wrapper
+
+
 def _not_found(session_id: str) -> JSONResponse:
     return JSONResponse(
         status_code=404,
@@ -42,6 +54,7 @@ def _with_error(body: dict, error: Optional[dict]) -> dict:
 
 # 1
 @router.post("")
+@guarded
 def create_session(body: SessionCreate):
     session_id = db.create_session(new_session_data(body.model_dump()))
     return {"session_id": session_id}
@@ -49,6 +62,7 @@ def create_session(body: SessionCreate):
 
 # 2
 @router.post("/{session_id}/docs")
+@guarded
 def upload_docs(session_id: str, file: Optional[UploadFile] = File(None)):
     data = db.get_session(session_id)
     if data is None:
@@ -78,6 +92,7 @@ def upload_docs(session_id: str, file: Optional[UploadFile] = File(None)):
 
 # 3
 @router.patch("/{session_id}/items")
+@guarded
 def patch_items(session_id: str, body: ItemsPatch):
     data = db.get_session(session_id)
     if data is None:
@@ -128,6 +143,7 @@ def patch_items(session_id: str, body: ItemsPatch):
 
 # 4
 @router.post("/{session_id}/chat")
+@guarded
 def upload_chat(session_id: str, file: Optional[UploadFile] = File(None)):
     data = db.get_session(session_id)
     if data is None:
@@ -159,6 +175,7 @@ def upload_chat(session_id: str, file: Optional[UploadFile] = File(None)):
 
 # 5
 @router.patch("/{session_id}/items/{item_id}/elements/{key}")
+@guarded
 def close_element(session_id: str, item_id: str, key: str, body: ElementClose):
     data = db.get_session(session_id)
     if data is None:
@@ -177,6 +194,7 @@ def close_element(session_id: str, item_id: str, key: str, body: ElementClose):
 
 # 6
 @router.get("/{session_id}/questions")
+@guarded
 def get_questions(session_id: str):
     data = db.get_session(session_id)
     if data is None:
@@ -194,6 +212,7 @@ def get_questions(session_id: str):
 
 # 7
 @router.post("/{session_id}/answers")
+@guarded
 def post_answers(session_id: str, body: AnswersBody):
     data = db.get_session(session_id)
     if data is None:
@@ -205,6 +224,7 @@ def post_answers(session_id: str, body: AnswersBody):
 
 # 8
 @router.patch("/{session_id}/annotations/{ann_id}")
+@guarded
 def patch_annotation(session_id: str, ann_id: str, body: AnnotationPatch):
     data = db.get_session(session_id)
     if data is None:
@@ -219,6 +239,7 @@ def patch_annotation(session_id: str, ann_id: str, body: AnnotationPatch):
 
 # 9
 @router.post("/{session_id}/publish")
+@guarded
 def publish(session_id: str):
     data = db.get_session(session_id)
     if data is None:
@@ -230,6 +251,7 @@ def publish(session_id: str):
 
 # 10
 @router.post("/{session_id}/ask")
+@guarded
 def ask(session_id: str, body: AskBody):
     data = db.get_session(session_id)
     if data is None:
@@ -243,6 +265,7 @@ def ask(session_id: str, body: AskBody):
 
 # 11
 @router.post("/{session_id}/ask/forward")
+@guarded
 def ask_forward(session_id: str, body: AskBody):
     data = db.get_session(session_id)
     if data is None:
@@ -256,6 +279,7 @@ def ask_forward(session_id: str, body: AskBody):
 
 # 계약 외 1개: 전임 질문함 화면용 (B에게 알릴 것)
 @router.get("/{session_id}/forwarded")
+@guarded
 def list_forwarded(session_id: str):
     data = db.get_session(session_id)
     if data is None:
