@@ -110,6 +110,10 @@ class AnnotationPatch(BaseModel):
     label: Optional[Label] = None
 
 
+class AskBody(BaseModel):
+    question: str
+
+
 class ElementClose(BaseModel):
     state: Literal["해당없음"]  # 해당없음은 사람만 정한다
     closed_by: Literal["전임", "후임"]

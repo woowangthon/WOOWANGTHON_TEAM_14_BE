@@ -255,6 +255,26 @@ def test_flow_fake_llm(client, monkeypatch):
         assert all(f["source"]["type"] == "자료" for f in it["facts"])
         assert all(a["source"]["type"] == "전임답변" for a in it["annotations"])
 
+    # §7-7 Q&A: 승인 주석의 단어 → hits ≥ 1, 무관한 질문 → none. rejected 주석(주무관)은 검색되지 않는다.
+    r = client.post(f"/sessions/{sid}/ask", json={"question": "회비 미납자는 어떻게 해요?"})
+    assert r.status_code == 200
+    qa = r.json()
+    assert qa["none"] is False and qa["summary"] is None and len(qa["hits"]) >= 1
+    assert qa["hits"][0]["annotation_id"] == "an_001" and qa["hits"][0]["score"] >= 2  # 회비 + 미납자는
+    assert set(qa["hits"][0]) == {"annotation_id", "text", "source", "label", "item", "score"}
+    assert qa["hits"][0]["item"] == "회비 정산" and qa["hits"][0]["source"]["type"] == "전임답변"
+    assert all(h["annotation_id"] in {"an_001", "an_002"} for h in qa["hits"])
+    for q in ("우주선 발사 일정", "주무관에게 연락"):
+        qa = client.post(f"/sessions/{sid}/ask", json={"question": q}).json()
+        assert qa == {"hits": [], "summary": None, "none": True}, q
+
+    # API 11 + GET /forwarded
+    r = client.post(f"/sessions/{sid}/ask/forward", json={"question": "우주선 발사 일정"})
+    assert r.status_code == 200 and r.json() == {"forwarded": True}
+    fw = client.get(f"/sessions/{sid}/forwarded").json()["forwarded"]
+    assert len(fw) == 1 and fw[0]["question"] == "우주선 발사 일정" and fw[0]["asked_at"]
+    assert client.post(f"/sessions/{sid}/ask/forward", json={"question": "  "}).json()["error"]["code"] == "empty_question"
+
     # 병합·삭제
     by_id = {it["id"]: it for it in body["items"]}
     n1, n4 = len(by_id["item_01"]["facts"]), len(by_id["item_04"]["facts"])
@@ -285,6 +305,10 @@ def test_flow_no_key_keeps_structure(client, monkeypatch):  # §7-8
 
     body = client.get(f"/sessions/{sid}/questions").json()
     assert body["cards"] == [] and body["more"] == [] and body["error"]["code"] == "no_items"
+
+    # 발행 전 ask → NOT_PUBLISHED (구조 유지)
+    qa = client.post(f"/sessions/{sid}/ask", json={"question": "회비"}).json()
+    assert qa["hits"] == [] and qa["summary"] is None and qa["none"] is True and qa["error"]["code"] == "NOT_PUBLISHED"
 
 
 def test_facts_llm_failure_keeps_items(client, monkeypatch):  # §7-8
@@ -464,6 +488,26 @@ def test_kakao_both_formats():
         ("chat#1", "2026-04-02", "회장", "코트 대관 신청했어요"),
         ("chat#2", "2026-04-03", "총무", "회비 입금 확인"),
     ]
+
+
+def test_qa_tokenize_and_search():
+    from app.services import qa
+
+    assert qa.tokenize("회비는 언제, 어떻게 내요?") == {"회비는", "내요"}  # '언제'·'어떻게' 불용어, 구두점 제거
+    assert qa.tokenize("a 이 가 을") == set()  # 길이 1 토큰 제거
+    published = {"items": [{"title": "코트 대관", "annotations": [
+        {"id": "an_001", "text": "체육시설과에 메일을 보낸다", "label": "전임경험", "source": {"type": "전임답변", "ids": ["q_01"]},
+         "slots": {"절차": None, "예외": None, "사례": None, "연락": "김 주무관 전화", "조건": None}},
+        {"id": "an_002", "text": "대관료는 회비에서 낸다", "label": "전임경험", "source": {"type": "전임답변", "ids": ["q_02"]},
+         "slots": {"절차": None, "예외": None, "사례": None, "연락": None, "조건": None}},
+    ]}]}
+    hits = qa.search(published, "주무관 전화 번호가 뭐예요")  # 슬롯 값으로도 매치
+    assert [h["annotation_id"] for h in hits] == ["an_001"] and hits[0]["score"] == 2
+    hits = qa.search(published, "코트 대관료는")  # 항목 제목(코트)으로 둘 다, '대관료는'으로 an_002가 앞
+    assert [h["annotation_id"] for h in hits] == ["an_002", "an_001"]
+    hits = qa.search(published, "코트 대관료")  # 토큰 완전 일치만 본다('대관료'≠'대관료는') → 둘 다 1점, 문서 순서
+    assert [(h["annotation_id"], h["score"]) for h in hits] == [("an_001", 1), ("an_002", 1)]
+    assert qa.search(published, "우주선 발사 일정") == []
 
 
 def test_keyword_filter_window():

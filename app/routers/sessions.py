@@ -8,8 +8,8 @@ from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from app import db
-from app.models import (ELEMENT_KEYS, AnnotationPatch, AnswersBody, ElementClose, ItemsPatch, SessionCreate,
-                        new_session_data)
+from app.models import (ELEMENT_KEYS, AnnotationPatch, AnswersBody, AskBody, ElementClose, ItemsPatch,
+                        SessionCreate, new_session_data)
 from app.parsers.docs import parse_doc
 from app.parsers.kakao import parse_kakao
 from app.services import annotations as annotations_service
@@ -17,6 +17,7 @@ from app.services import elements as elements_service
 from app.services import facts as facts_service
 from app.services import items as items_service
 from app.services import publish as publish_service
+from app.services import qa as qa_service
 from app.services import questions as questions_service
 
 router = APIRouter(prefix="/sessions")
@@ -225,3 +226,38 @@ def publish(session_id: str):
     document = publish_service.publish(data)
     db.save_session(session_id, data)
     return {"document": document}
+
+
+# 10
+@router.post("/{session_id}/ask")
+def ask(session_id: str, body: AskBody):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    if not data.get("published"):
+        return {"hits": [], "summary": None, "none": True,
+                "error": _err("NOT_PUBLISHED", "발행된 기록이 없습니다. 전임이 주석을 승인하고 발행해야 검색할 수 있습니다.")}
+    hits = qa_service.search(data["published"], body.question)
+    return {"hits": hits, "summary": None, "none": not hits}
+
+
+# 11
+@router.post("/{session_id}/ask/forward")
+def ask_forward(session_id: str, body: AskBody):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    if not body.question.strip():
+        return {"forwarded": False, "error": _err("empty_question", "질문이 비어 있습니다.")}
+    qa_service.forward(data, body.question)
+    db.save_session(session_id, data)
+    return {"forwarded": True}
+
+
+# 계약 외 1개: 전임 질문함 화면용 (B에게 알릴 것)
+@router.get("/{session_id}/forwarded")
+def list_forwarded(session_id: str):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    return {"forwarded": data["forwarded"]}
