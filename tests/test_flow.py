@@ -237,6 +237,24 @@ def test_flow_fake_llm(client, monkeypatch):
     assert client.patch(f"/sessions/{sid}/annotations/an_999", json={"status": "approved"}).json()["error"]["code"] == "annotation_not_found"
     assert client.patch(f"/sessions/{sid}/annotations/{anns[0]['id']}", json={"status": "published"}).json()["error"]["code"] == "invalid_request"
 
+    # §7-6 발행: approved 2 + edited 1 → 3개. an_003을 reject하면 정확히 2개. draft·rejected는 새지 않는다.
+    NOTICE = "이 문서는 전임의 경험을 정리한 것이며 회칙·규정이 우선합니다."
+    r = client.post(f"/sessions/{sid}/publish")
+    assert r.status_code == 200
+    doc = r.json()["document"]
+    published = [a for it in doc["items"] for a in it["annotations"]]
+    assert {a["id"] for a in published} == {"an_001", "an_002", "an_003"} and doc["notice"] == NOTICE
+    client.patch(f"/sessions/{sid}/annotations/an_003", json={"status": "rejected"})
+    doc = client.post(f"/sessions/{sid}/publish").json()["document"]
+    published = [a for it in doc["items"] for a in it["annotations"]]
+    assert [a["id"] for a in published] == ["an_001", "an_002"]
+    assert all(a["status"] == "approved" for a in published)
+    assert set(doc["items"][0]) == {"id", "title", "elements", "facts", "annotations"}
+    assert [it["id"] for it in doc["items"]] == [it["id"] for it in body["items"]]
+    for it in doc["items"]:  # facts(자료)와 annotations(전임답변) 분리
+        assert all(f["source"]["type"] == "자료" for f in it["facts"])
+        assert all(a["source"]["type"] == "전임답변" for a in it["annotations"])
+
     # 병합·삭제
     by_id = {it["id"]: it for it in body["items"]}
     n1, n4 = len(by_id["item_01"]["facts"]), len(by_id["item_04"]["facts"])
@@ -293,6 +311,11 @@ def test_facts_llm_failure_keeps_items(client, monkeypatch):  # §7-8
     # 답변 → 주석도 LLM 실패 → annotations=[] + error, 500 없음
     r = client.post(f"/sessions/{sid}/answers", json={"answers": [{"question_id": qs["cards"][0]["id"], "text": "충분히 긴 답변입니다."}]})
     assert r.status_code == 200 and r.json()["annotations"] == [] and r.json()["error"]["code"] == "llm_call_failed"
+
+    # 승인된 주석 0개 → error 없이 빈 배열 + notice 뒤에 한 줄
+    doc = client.post(f"/sessions/{sid}/publish").json()["document"]
+    assert all(it["annotations"] == [] for it in doc["items"]) and len(doc["items"]) == 4
+    assert doc["notice"].endswith("\n승인된 기록이 없습니다.")
 
 
 def test_elements_reject_not_applicable_from_llm(client, monkeypatch):

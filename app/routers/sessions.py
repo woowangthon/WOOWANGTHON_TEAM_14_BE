@@ -16,6 +16,7 @@ from app.services import annotations as annotations_service
 from app.services import elements as elements_service
 from app.services import facts as facts_service
 from app.services import items as items_service
+from app.services import publish as publish_service
 from app.services import questions as questions_service
 
 router = APIRouter(prefix="/sessions")
@@ -213,3 +214,14 @@ def patch_annotation(session_id: str, ann_id: str, body: AnnotationPatch):
     annotations_service.patch_annotation(ann, body.status, body.text, body.label)
     db.save_session(session_id, data)
     return {"annotation": ann}
+
+
+# 9
+@router.post("/{session_id}/publish")
+def publish(session_id: str):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    document = publish_service.publish(data)
+    db.save_session(session_id, data)
+    return {"document": document}
