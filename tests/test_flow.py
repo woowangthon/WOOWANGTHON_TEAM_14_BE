@@ -56,6 +56,14 @@ def fake_call_json(prompt_name, payload, schema, retries=1):
     elif prompt_name == "04_questions":
         obj = {"step1": f"{payload['item']}의 {payload['element']}은 실제로 어떻게 하시나요?",
                "step2": "평소와 다르게 처리한 경우가 있었나요?", "step3": "최근 사례를 하나 들어주실 수 있나요?"}
+    elif prompt_name == "05_annotations":
+        ans = payload["answer"]
+        one = {"element": payload["element"], "text": f"{payload['item']}: {ans[:30]}",
+               "slots": {"절차": ans, "예외": None, "사례": None, "연락": None, "조건": None}}
+        obj = {"annotations": [one]}
+        if "연락처" in ans:  # 서로 다른 요소가 섞인 답변 → 2개로 나눔
+            obj["annotations"].append({"element": "연락경로", "text": "체육시설과 김 주무관에게 메일 후 전화",
+                                       "slots": {"절차": None, "예외": None, "사례": None, "연락": "체육시설과 메일+전화", "조건": None}})
     else:
         raise AssertionError(prompt_name)
     return schema.model_validate(obj).model_dump(), None
@@ -197,6 +205,38 @@ def test_flow_fake_llm(client, monkeypatch):
     assert [q["rank"] for q in qs["more"]] == list(range(6, 6 + len(qs["more"])))
     assert client.get(f"/sessions/{sid}/questions").json() == qs  # 두 번째 호출은 저장된 것
 
+    # §7-5 답변 3개 → 주석 ≥ 3 (모두 draft, source.type=전임답변). 짧은 답변은 skip, 없는 질문은 error.
+    q1, q2, q3 = (q["id"] for q in qs["cards"][:3])
+    r = client.post(f"/sessions/{sid}/answers", json={"answers": [
+        {"question_id": q1, "text": "매월 25일까지 계좌로 받고, 미납자는 개별로 연락합니다."},
+        {"question_id": q2, "text": "체육시설과 연락처는 메일로 먼저 보내고 다음 날 전화합니다."},
+        {"question_id": q3, "text": "대회 2주 전에 참가자 명단을 확정해 둡니다.", "audio_url": "https://x/a.m4a"},
+        {"question_id": qs["cards"][3]["id"], "text": "네"},
+        {"question_id": "q_99", "text": "없는 질문에 대한 긴 답변입니다."},
+    ]})
+    assert r.status_code == 200
+    ab = r.json()
+    anns = ab["annotations"]
+    assert len(anns) == 4  # 3개 + 요소가 섞인 답변 1개는 2개로 나뉨
+    assert [a["id"] for a in anns] == ["an_001", "an_002", "an_003", "an_004"]
+    assert all(a["status"] == "draft" and a["source"]["type"] == "전임답변" and a["label"] == "전임경험" for a in anns)
+    assert {a["source"]["ids"][0] for a in anns} == {q1, q2, q3}
+    assert all(set(a["slots"]) == {"절차", "예외", "사례", "연락", "조건"} for a in anns)
+    assert any(a["slots"]["사례"] is None for a in anns)  # 사례 null이어도 저장
+    assert ab["skipped"] == [qs["cards"][3]["id"]]
+    assert ab["error"]["code"] == "answers_partial" and "q_99" in ab["error"]["message"]
+
+    # API 8: approve 2개, 1개는 text 수정 → edited, 1개 reject
+    for ann_id, status in ((anns[0]["id"], "approved"), (anns[1]["id"], "approved"), (anns[3]["id"], "rejected")):
+        r = client.patch(f"/sessions/{sid}/annotations/{ann_id}", json={"status": status})
+        assert r.status_code == 200 and r.json()["annotation"]["status"] == status
+    r = client.patch(f"/sessions/{sid}/annotations/{anns[2]['id']}", json={"text": "대회 2주 전 명단 확정, 참가비는 회비 계좌로."})
+    assert r.json()["annotation"]["status"] == "edited" and r.json()["annotation"]["text"].startswith("대회 2주 전 명단")
+    r = client.patch(f"/sessions/{sid}/annotations/{anns[0]['id']}", json={"text": anns[0]["text"]})  # 같은 text면 그대로
+    assert r.json()["annotation"]["status"] == "approved"
+    assert client.patch(f"/sessions/{sid}/annotations/an_999", json={"status": "approved"}).json()["error"]["code"] == "annotation_not_found"
+    assert client.patch(f"/sessions/{sid}/annotations/{anns[0]['id']}", json={"status": "published"}).json()["error"]["code"] == "invalid_request"
+
     # 병합·삭제
     by_id = {it["id"]: it for it in body["items"]}
     n1, n4 = len(by_id["item_01"]["facts"]), len(by_id["item_04"]["facts"])
@@ -249,6 +289,10 @@ def test_facts_llm_failure_keeps_items(client, monkeypatch):  # §7-8
     check_cards(qs)
     assert len(qs["cards"]) == 5 and all(q["fallback"] for q in qs["cards"]) and qs["error"]["code"] == "llm_call_failed"
     assert len(qs["cards"]) + len(qs["more"]) == 4 * 6  # 4항목 × 6요소 모두 모호함 → 후보 24개
+
+    # 답변 → 주석도 LLM 실패 → annotations=[] + error, 500 없음
+    r = client.post(f"/sessions/{sid}/answers", json={"answers": [{"question_id": qs["cards"][0]["id"], "text": "충분히 긴 답변입니다."}]})
+    assert r.status_code == 200 and r.json()["annotations"] == [] and r.json()["error"]["code"] == "llm_call_failed"
 
 
 def test_elements_reject_not_applicable_from_llm(client, monkeypatch):

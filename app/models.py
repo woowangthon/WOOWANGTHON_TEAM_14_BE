@@ -100,6 +100,16 @@ class ItemsPatch(BaseModel):
     items: list[ItemPatch]
 
 
+class AnswersBody(BaseModel):
+    answers: list[Answer]
+
+
+class AnnotationPatch(BaseModel):
+    status: Optional[Literal["draft", "approved", "edited", "rejected"]] = None
+    text: Optional[str] = None
+    label: Optional[Label] = None
+
+
 class ElementClose(BaseModel):
     state: Literal["해당없음"]  # 해당없음은 사람만 정한다
     closed_by: Literal["전임", "후임"]

@@ -8,9 +8,11 @@ from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from app import db
-from app.models import ELEMENT_KEYS, ElementClose, ItemsPatch, SessionCreate, new_session_data
+from app.models import (ELEMENT_KEYS, AnnotationPatch, AnswersBody, ElementClose, ItemsPatch, SessionCreate,
+                        new_session_data)
 from app.parsers.docs import parse_doc
 from app.parsers.kakao import parse_kakao
+from app.services import annotations as annotations_service
 from app.services import elements as elements_service
 from app.services import facts as facts_service
 from app.services import items as items_service
@@ -186,3 +188,28 @@ def get_questions(session_id: str):
     data["questions"] = questions
     db.save_session(session_id, data)
     return _with_error(questions_service.split(questions), error)
+
+
+# 7
+@router.post("/{session_id}/answers")
+def post_answers(session_id: str, body: AnswersBody):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    created, skipped, error = annotations_service.create_annotations(data, [a.model_dump() for a in body.answers])
+    db.save_session(session_id, data)
+    return _with_error({"annotations": created, "skipped": skipped}, error)
+
+
+# 8
+@router.patch("/{session_id}/annotations/{ann_id}")
+def patch_annotation(session_id: str, ann_id: str, body: AnnotationPatch):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    ann = next((a for a in data["annotations"] if a["id"] == ann_id), None)
+    if ann is None:
+        return {"annotation": None, "error": _err("annotation_not_found", f"없는 주석: {ann_id}")}
+    annotations_service.patch_annotation(ann, body.status, body.text, body.label)
+    db.save_session(session_id, data)
+    return {"annotation": ann}
