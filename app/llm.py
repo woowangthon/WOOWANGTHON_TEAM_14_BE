@@ -17,6 +17,21 @@ PROMPTS_DIR = BASE_DIR / "prompts"
 load_dotenv(BASE_DIR / ".env")
 
 TIMEOUT_SECONDS = 60
+PROMPT_NAMES = ("01_items", "02_facts", "03_elements", "04_questions", "05_annotations")
+
+
+def prompt_version() -> str:
+    """prompts/ 5개 파일 sha256 앞 8자리를 이어 붙인 값. 골드셋 비교 때 프롬프트가 바뀌었는지 확인하는 용도."""
+    import hashlib
+    parts = []
+    for name in PROMPT_NAMES:
+        path = PROMPTS_DIR / f"{name}.md"
+        parts.append(hashlib.sha256(path.read_bytes()).hexdigest()[:8] if path.exists() else "missing_")
+    return "".join(parts)
+
+
+def model_name() -> str:
+    return (os.getenv("LLM_MODEL") or "gpt-4o-mini").strip()
 
 
 def _error(code: str, message: str) -> dict:
@@ -52,7 +67,7 @@ def call_json(
     except OSError as e:
         return None, _error("llm_prompt_missing", f"프롬프트 파일을 읽지 못했습니다: {prompt_name} ({e})")
 
-    model = (os.getenv("LLM_MODEL") or "gpt-4o-mini").strip()
+    model = model_name()
     base_url = (os.getenv("LLM_BASE_URL") or "").strip() or None
     messages = [
         {"role": "system", "content": system},
