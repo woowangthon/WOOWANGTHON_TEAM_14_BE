@@ -9,16 +9,22 @@ from fastapi.responses import JSONResponse
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from app.routers import sessions  # noqa: E402  (.env를 먼저 읽는다)
+from app import llm  # noqa: E402  (.env를 먼저 읽는다)
+from app.routers import sessions  # noqa: E402
 
 app = FastAPI(title="빠진 페이지 BE")
 
-_origins = list(dict.fromkeys(
-    o for o in [(os.getenv("FE_ORIGIN") or "").strip(), "http://localhost:5173"] if o
-))
+
+def _origins() -> list[str]:
+    """FRONTEND_ORIGINS(쉼표 구분). 기본 http://localhost:5173. '*'는 쓰지 않는다. (FE_ORIGIN은 옛 이름, 호환용)"""
+    raw = os.getenv("FRONTEND_ORIGINS") or os.getenv("FE_ORIGIN") or "http://localhost:5173"
+    origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip() and o.strip() != "*"]
+    return list(dict.fromkeys(origins)) or ["http://localhost:5173"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_origins,
+    allow_origins=_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -45,7 +51,7 @@ def _unexpected(request: Request, exc: Exception):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"ok": True, "status": "ok", "version": llm.prompt_version(), "model": llm.model_name()}
 
 
 app.include_router(sessions.router)

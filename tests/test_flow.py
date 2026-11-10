@@ -2,7 +2,7 @@
 
 - 가짜 LLM: 키 없이도 후처리(출처 검증 등)까지 검사
 - 키 없음: error 경로에서 응답 구조 유지
-- 실제 LLM: .env에 LLM_API_KEY가 있을 때만 실행
+- 실제 LLM: .env에 OPENAI_API_KEY(또는 LLM_API_KEY)가 있을 때만, `pytest -m llm` 으로 실행
 """
 import os
 import re
@@ -17,7 +17,8 @@ from app.parsers.kakao import parse_kakao
 from app.services.facts import filter_messages
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
-HAS_KEY = bool((os.getenv("LLM_API_KEY") or "").strip())
+HAS_KEY = bool(llm.api_key())
+KEY_ENVS = ("OPENAI_API_KEY", "LLM_API_KEY")
 CHAT_IDS = {m["id"] for m in parse_kakao((FIXTURES / "kakao.txt").read_bytes())}
 
 FAKE_ITEMS = {"items": [
@@ -293,7 +294,8 @@ def test_full_flow_fake_llm(client, monkeypatch):
 
 
 def test_flow_no_key_keeps_structure(client, monkeypatch):  # §7-8
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    for name in KEY_ENVS:
+        monkeypatch.delenv(name, raising=False)
     sid = new_session(client)
 
     body = upload(client, sid, "docs", "rules.txt")
@@ -391,7 +393,7 @@ def test_elements_reject_not_applicable_from_llm(client, monkeypatch):
 
 
 @pytest.mark.llm
-@pytest.mark.skipif(not HAS_KEY, reason="LLM_API_KEY 없음: 실제 호출 검사는 건너뜀")
+@pytest.mark.skipif(not HAS_KEY, reason="OPENAI_API_KEY 없음: 실제 호출 검사는 건너뜀")
 def test_full_flow_real_llm(client):
     """실제 LLM으로 §7의 1~8. `pytest -m llm` 으로만 돈다."""
     sid = new_session(client)
@@ -472,7 +474,7 @@ def test_call_json_retries_once_then_gives_error(monkeypatch):
         monkeypatch.setattr(llm, "OpenAI", lambda **kw: fake)
         return calls
 
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     calls = install(['{"wrong": 1}', '```json\n{"items": ["가"]}\n```'])
     assert llm.call_json("01_items", {"sentences": []}, Out) == ({"items": ["가"]}, None)

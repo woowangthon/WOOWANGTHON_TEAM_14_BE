@@ -1,0 +1,22 @@
+# Render Blueprint. 이 저장소는 BE 전용이라 Root Directory는 저장소 루트(비워 둠)다.
+services:
+  - type: web
+    name: bbajin-page-be
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: OPENAI_API_KEY
+        sync: false            # 대시보드에서 직접 입력
+      - key: OPENAI_BASE_URL
+        value: ""
+      - key: MODEL_NAME
+        value: gpt-4o-mini
+      - key: FRONTEND_ORIGINS
+        value: http://localhost:5173   # 배포 후 Vercel 도메인을 쉼표로 추가
+      - key: DB_PATH
+        value: ./data/app.db

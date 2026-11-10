@@ -10,9 +10,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 def _connect() -> sqlite3.Connection:
-    # 경로는 호출 시점에 읽는다(테스트에서 DB_PATH를 바꿀 수 있게).
-    path = os.getenv("DB_PATH") or str(BASE_DIR / "sessions.db")
-    conn = sqlite3.connect(path)
+    # 경로는 호출 시점에 읽는다(테스트에서 DB_PATH를 바꿀 수 있게). 기본 ./data/app.db, 디렉터리가 없으면 만든다.
+    path = Path(os.getenv("DB_PATH") or (BASE_DIR / "data" / "app.db"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
     conn.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
     return conn
 

@@ -30,8 +30,25 @@ def prompt_version() -> str:
     return "".join(parts)
 
 
+def _env(*names: str, default: str = "") -> str:
+    """여러 이름 중 먼저 값이 있는 것. 배포(Render)는 OPENAI_*/MODEL_NAME, CLAUDE.md §2의 LLM_*도 그대로 받는다."""
+    for n in names:
+        v = (os.getenv(n) or "").strip()
+        if v:
+            return v
+    return default
+
+
+def api_key() -> str:
+    return _env("OPENAI_API_KEY", "LLM_API_KEY")
+
+
 def model_name() -> str:
-    return (os.getenv("LLM_MODEL") or "gpt-4o-mini").strip()
+    return _env("MODEL_NAME", "LLM_MODEL", default="gpt-4o-mini")
+
+
+def base_url() -> Optional[str]:
+    return _env("OPENAI_BASE_URL", "LLM_BASE_URL") or None
 
 
 def _error(code: str, message: str) -> dict:
@@ -58,9 +75,9 @@ def call_json(
 
     반환: (obj, None) 또는 (None, {"code", "message"}).
     """
-    api_key = (os.getenv("LLM_API_KEY") or "").strip()
-    if not api_key:
-        return None, _error("llm_no_key", "LLM_API_KEY가 설정되지 않았습니다(.env 확인).")
+    key = api_key()
+    if not key:
+        return None, _error("llm_no_key", "OPENAI_API_KEY(또는 LLM_API_KEY)가 설정되지 않았습니다(.env 확인).")
 
     try:
         system = (PROMPTS_DIR / f"{prompt_name}.md").read_text(encoding="utf-8")
@@ -68,7 +85,6 @@ def call_json(
         return None, _error("llm_prompt_missing", f"프롬프트 파일을 읽지 못했습니다: {prompt_name} ({e})")
 
     model = model_name()
-    base_url = (os.getenv("LLM_BASE_URL") or "").strip() or None
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -77,7 +93,7 @@ def call_json(
     last = _error("llm_failed", "LLM 호출에 실패했습니다.")
     for _ in range(1 + max(0, retries)):
         try:
-            client = OpenAI(api_key=api_key, base_url=base_url, timeout=TIMEOUT_SECONDS, max_retries=0)
+            client = OpenAI(api_key=key, base_url=base_url(), timeout=TIMEOUT_SECONDS, max_retries=0)
             resp = client.chat.completions.create(
                 model=model,
                 messages=messages,
