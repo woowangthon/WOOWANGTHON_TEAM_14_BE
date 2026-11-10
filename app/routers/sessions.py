@@ -8,9 +8,10 @@ from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from app import db
-from app.models import ItemsPatch, SessionCreate, new_session_data
+from app.models import ELEMENT_KEYS, ElementClose, ItemsPatch, SessionCreate, new_session_data
 from app.parsers.docs import parse_doc
 from app.parsers.kakao import parse_kakao
+from app.services import elements as elements_service
 from app.services import facts as facts_service
 from app.services import items as items_service
 
@@ -143,11 +144,27 @@ def upload_chat(session_id: str, file: Optional[UploadFile] = File(None)):
     elif not items:
         error = _err("no_items", "업무 항목이 없습니다. 먼저 문서를 올려 항목을 만들어주세요.")
     else:
-        try:
-            error = facts_service.extract_facts(items, chat)
-        except Exception as e:
-            error = _err("facts_failed", f"{type(e).__name__}: {e}")
-        # TODO(11/10): services.elements로 6요소 판정 → score 계산 → rank_items 정렬
+        error = facts_service.extract_facts(items, chat)
+        error = elements_service.judge_elements(items, data["doc_sentences"], data["meta"].get("item_evidence", {})) or error
+        items = data["items"] = elements_service.rank_items(items)
 
     db.save_session(session_id, data)
     return _with_error({"items": items, "chat_count": len(chat)}, error)
+
+
+# 5
+@router.patch("/{session_id}/items/{item_id}/elements/{key}")
+def close_element(session_id: str, item_id: str, key: str, body: ElementClose):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    item = next((it for it in data["items"] if it["id"] == item_id), None)
+    if item is None:
+        return {"item": None, "error": _err("item_not_found", f"없는 항목: {item_id}")}
+    if key not in ELEMENT_KEYS:
+        return {"item": item, "error": _err("invalid_element_key", f"요소 키는 {', '.join(ELEMENT_KEYS)} 중 하나여야 합니다: {key}")}
+
+    elements_service.close_element(item, key, body.closed_by)
+    data["items"] = elements_service.rank_items(data["items"])
+    db.save_session(session_id, data)
+    return {"item": item}

@@ -38,9 +38,35 @@ def fake_call_json(prompt_name, payload, schema, retries=1):
         facts.append({"text": "짐작한 날짜", "date": "2026-05-19", "date_estimated": True,
                       "source_ids": [msgs[0]["id"], "chat#9999"]})  # 가짜 id만 지워져야 함
         obj = {"facts": facts}
+    elif prompt_name == "03_elements":
+        # 배경 누락, 문서에없음에 fill이 붙어 옴(후처리에서 지워져야 함). 항목별로 점수가 다르게 나오도록 한다.
+        title = payload["item"]
+        if title.startswith("회비"):
+            obj = {"elements": {
+                "시기": {"state": "있음", "fill": "추가확인권장", "evidence": "doc#1"},
+                "연락경로": {"state": "문서에없음", "fill": "확인됨"},
+                "판단기준": {"state": "모호함", "evidence": "doc#2"},
+                "자주틀리는점": {"state": "문서에없음"},
+                "미리할일": {"state": "있음", "fill": "확인됨", "evidence": "fact_001"},
+            }}  # score 5 (배경 누락 → 모호함 포함)
+        else:
+            obj = {"elements": {k: {"state": "있음", "fill": "확인됨", "evidence": "doc#3"} for k in
+                                ("시기", "연락경로", "판단기준", "자주틀리는점", "미리할일")}}  # 배경 모호함 → score 1
     else:
         raise AssertionError(prompt_name)
     return schema.model_validate(obj).model_dump(), None
+
+
+ELEMENT_KEYS = ("시기", "연락경로", "판단기준", "자주틀리는점", "미리할일", "배경")
+
+
+def check_elements(items):  # §7-3
+    for it in items:
+        assert set(it["elements"]) == set(ELEMENT_KEYS), it["id"]
+        assert all(el["state"] != "해당없음" for el in it["elements"].values())
+        for el in it["elements"].values():
+            if el["state"] != "있음":
+                assert "fill" not in el
 
 
 @pytest.fixture
@@ -102,8 +128,27 @@ def test_flow_fake_llm(client, monkeypatch):
     assert estimated and all(f["status"] == "추정" and len(f["source"]["ids"]) == 1 for f in estimated)
     assert all(f["status"] == "확인됨" for f in facts if not f["date_estimated"])
 
+    # §7-3 요소 판정 + 정렬
+    check_elements(body["items"])
+    assert [it["id"] for it in body["items"]] == ["item_01", "item_02", "item_03", "item_04"]
+    assert body["items"][0]["score"] == 5 and body["items"][0]["elements"]["배경"] == {"state": "모호함"}
+    assert body["items"][0]["elements"]["연락경로"] == {"state": "문서에없음"}
+    assert all(it["score"] == 1 for it in body["items"][1:])
+
+    # API 5: 해당없음 닫기 → 그 키만 바뀌고 score가 1 줄어든다
+    r = client.patch(f"/sessions/{sid}/items/item_01/elements/연락경로", json={"state": "해당없음", "closed_by": "전임"})
+    assert r.status_code == 200
+    item = r.json()["item"]
+    assert item["elements"]["연락경로"] == {"state": "해당없음", "closed_by": "전임"} and item["score"] == 4
+    assert sum(1 for el in item["elements"].values() if el["state"] == "해당없음") == 1
+    r = client.patch(f"/sessions/{sid}/items/item_01/elements/기타", json={"state": "해당없음", "closed_by": "전임"})
+    assert r.status_code == 200 and r.json()["error"]["code"] == "invalid_element_key"
+    r = client.patch(f"/sessions/{sid}/items/item_01/elements/시기", json={"state": "있음", "closed_by": "전임"})
+    assert r.status_code == 200 and r.json()["error"]["code"] == "invalid_request"  # 해당없음만 허용
+
     # 병합·삭제
-    n1, n4 = len(body["items"][0]["facts"]), len(body["items"][3]["facts"])
+    by_id = {it["id"]: it for it in body["items"]}
+    n1, n4 = len(by_id["item_01"]["facts"]), len(by_id["item_04"]["facts"])
     r = client.patch(f"/sessions/{sid}/items", json={"items": [
         {"id": "item_04", "merge_into": "item_01"},
         {"id": "item_03", "delete": True},
@@ -142,6 +187,30 @@ def test_facts_llm_failure_keeps_items(client, monkeypatch):  # §7-8
     body = upload(client, sid, "chat", "kakao.txt")
     assert len(body["items"]) == 4 and all(it["facts"] == [] for it in body["items"])
     assert body["error"]["code"] == "llm_call_failed"
+    for it in body["items"]:  # 요소 판정도 실패 → 6개 모두 모호함(보류), score 6
+        assert it["elements"] == {k: {"state": "모호함"} for k in ELEMENT_KEYS} and it["score"] == 6
+
+
+def test_elements_reject_not_applicable_from_llm(client, monkeypatch):
+    """LLM이 해당없음을 내면 스키마 실패 → 6개 모두 모호함 + error. 사람이 닫은 해당없음은 재판정 때 유지."""
+    from app.services import elements as es
+
+    def fake(prompt_name, payload, schema, retries=1):
+        if prompt_name == "03_elements":
+            return None, {"code": "llm_schema_invalid", "message": "해당없음"}
+        return fake_call_json(prompt_name, payload, schema)
+
+    with pytest.raises(Exception):
+        es._LLMElements.model_validate({"elements": {"시기": {"state": "해당없음"}}})
+
+    item = {"id": "item_01", "title": "회비 정산", "keywords": ["회비"], "facts": [],
+            "elements": {"배경": {"state": "해당없음", "closed_by": "후임"}}}
+    monkeypatch.setattr(llm, "call_json", fake)
+    assert es.judge_elements([item], [], {})["code"] == "llm_schema_invalid"
+    assert item["elements"]["배경"] == {"state": "해당없음", "closed_by": "후임"}
+    assert all(item["elements"][k] == {"state": "모호함"} for k in ELEMENT_KEYS if k != "배경")
+    assert item["score"] == 5
+    assert [it["id"] for it in es.rank_items([{"id": "a", "score": 1, "elements": {}}, {"id": "b", "score": 3, "elements": {}}])] == ["b", "a"]
 
 
 @pytest.mark.skipif(not HAS_KEY, reason="LLM_API_KEY 없음: 실제 호출 검사는 건너뜀")

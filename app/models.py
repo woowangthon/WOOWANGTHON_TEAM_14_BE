@@ -99,6 +99,11 @@ class ItemsPatch(BaseModel):
     items: list[ItemPatch]
 
 
+class ElementClose(BaseModel):
+    state: Literal["해당없음"]  # 해당없음은 사람만 정한다
+    closed_by: Literal["전임", "후임"]
+
+
 def new_session_data(meta: dict) -> dict:
     """세션 1개 = JSON 1행 (§3)."""
     return {
