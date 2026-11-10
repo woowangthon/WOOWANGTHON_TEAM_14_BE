@@ -52,6 +52,7 @@ class Question(BaseModel):
     step2: str
     step3: str
     rank: int = 0  # 1~5 카드, 6+ 추가 질문, 0 미정
+    fallback: Optional[bool] = None  # 기본 템플릿으로 채운 질문이면 True (optional 추가 필드)
 
 
 class Answer(BaseModel):

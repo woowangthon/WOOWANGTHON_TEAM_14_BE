@@ -14,6 +14,7 @@ from app.parsers.kakao import parse_kakao
 from app.services import elements as elements_service
 from app.services import facts as facts_service
 from app.services import items as items_service
+from app.services import questions as questions_service
 
 router = APIRouter(prefix="/sessions")
 
@@ -168,3 +169,20 @@ def close_element(session_id: str, item_id: str, key: str, body: ElementClose):
     data["items"] = elements_service.rank_items(data["items"])
     db.save_session(session_id, data)
     return {"item": item}
+
+
+# 6
+@router.get("/{session_id}/questions")
+def get_questions(session_id: str):
+    data = db.get_session(session_id)
+    if data is None:
+        return _not_found(session_id)
+    if data["questions"]:  # 최초 호출 때 만든 것을 그대로 돌려준다
+        return questions_service.split(data["questions"])
+    if not data["items"]:
+        return {"cards": [], "more": [], "error": _err("no_items", "업무 항목이 없습니다. 문서와 대화를 먼저 올려주세요.")}
+
+    questions, error = questions_service.generate_questions(data["items"], data["doc_sentences"])
+    data["questions"] = questions
+    db.save_session(session_id, data)
+    return _with_error(questions_service.split(questions), error)

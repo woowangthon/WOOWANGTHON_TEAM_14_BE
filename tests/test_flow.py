@@ -5,6 +5,7 @@
 - 실제 LLM: .env에 LLM_API_KEY가 있을 때만 실행
 """
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -52,9 +53,36 @@ def fake_call_json(prompt_name, payload, schema, retries=1):
         else:
             obj = {"elements": {k: {"state": "있음", "fill": "확인됨", "evidence": "doc#3"} for k in
                                 ("시기", "연락경로", "판단기준", "자주틀리는점", "미리할일")}}  # 배경 모호함 → score 1
+    elif prompt_name == "04_questions":
+        obj = {"step1": f"{payload['item']}의 {payload['element']}은 실제로 어떻게 하시나요?",
+               "step2": "평소와 다르게 처리한 경우가 있었나요?", "step3": "최근 사례를 하나 들어주실 수 있나요?"}
     else:
         raise AssertionError(prompt_name)
     return schema.model_validate(obj).model_dump(), None
+
+
+def schema_dump(schema, obj):
+    return schema.model_validate(obj).model_dump()
+
+
+def llm_no_key(prompt_name, payload, schema, retries=1):
+    return None, {"code": "llm_no_key", "message": "no key"}
+
+
+FORBIDDEN = [re.compile(p) for p in (
+    r"실수|문제|반려|잘못|힘든", r"와\s.+\s중", r"인가요\s*아니면", r"했을\s*텐데|하셨잖아요", r"편법|그냥|빨리\s*처리")]
+
+
+def check_cards(qs):  # §7-4
+    cards = qs["cards"]
+    assert len(cards) <= 5
+    per_item = {}
+    for q in cards:
+        per_item[q["item_id"]] = per_item.get(q["item_id"], 0) + 1
+    assert all(n <= 2 for n in per_item.values()), per_item
+    for q in cards + qs["more"]:
+        joined = " ".join((q["step1"], q["step2"], q["step3"]))
+        assert not any(p.search(joined) for p in FORBIDDEN), joined
 
 
 ELEMENT_KEYS = ("시기", "연락경로", "판단기준", "자주틀리는점", "미리할일", "배경")
@@ -146,6 +174,29 @@ def test_flow_fake_llm(client, monkeypatch):
     r = client.patch(f"/sessions/{sid}/items/item_01/elements/시기", json={"state": "있음", "closed_by": "전임"})
     assert r.status_code == 200 and r.json()["error"]["code"] == "invalid_request"  # 해당없음만 허용
 
+    # §7-4 질문 카드
+    r = client.get(f"/sessions/{sid}/questions")
+    assert r.status_code == 200
+    qs = r.json()
+    assert "error" not in qs
+    check_cards(qs)
+    assert [q["rank"] for q in qs["cards"]] == [1, 2, 3, 4, 5]
+    assert all("fallback" not in q for q in qs["cards"]) and all(q["fallback"] for q in qs["more"])
+    # 후보 순서: 회비(score 4)의 문서에없음(자주틀리는점) → 모호함(판단기준). 연락경로는 위에서 해당없음으로 닫혔으니 제외.
+    # 항목당 2장이므로 회비는 거기까지, 나머지 항목은 배경(모호함)만 비어 있음
+    assert [(q["item_id"], q["element"], q["kind"]) for q in qs["cards"]][:2] == [
+        ("item_01", "자주틀리는점", "빈칸"), ("item_01", "판단기준", "빈칸")]
+    assert all(q["element"] != "연락경로" for q in qs["cards"] + qs["more"] if q["item_id"] == "item_01")
+    # 다른 항목(score 1)은 배경(모호함, 빈칸)과 추정 fact(시기, 확인)만 후보 — 둘 다 우선순위 1
+    assert all((q["element"], q["kind"]) in {("배경", "빈칸"), ("시기", "확인")} for q in qs["cards"][2:])
+    everything = qs["cards"] + qs["more"]
+    # 회비/시기는 추가확인권장(보완, 우선 2)과 추정 fact(확인, 우선 1)가 겹치므로 확인 하나만 남는다
+    assert {q["kind"] for q in everything} == {"빈칸", "확인"}
+    assert sum(1 for q in everything if q["item_id"] == "item_01" and q["element"] == "시기") == 1
+    assert len({(q["item_id"], q["element"]) for q in everything}) == len(everything)
+    assert [q["rank"] for q in qs["more"]] == list(range(6, 6 + len(qs["more"])))
+    assert client.get(f"/sessions/{sid}/questions").json() == qs  # 두 번째 호출은 저장된 것
+
     # 병합·삭제
     by_id = {it["id"]: it for it in body["items"]}
     n1, n4 = len(by_id["item_01"]["facts"]), len(by_id["item_04"]["facts"])
@@ -174,6 +225,9 @@ def test_flow_no_key_keeps_structure(client, monkeypatch):  # §7-8
     assert body["items"] == [] and body["chat_count"] == 55
     assert set(body["error"]) == {"code", "message"}
 
+    body = client.get(f"/sessions/{sid}/questions").json()
+    assert body["cards"] == [] and body["more"] == [] and body["error"]["code"] == "no_items"
+
 
 def test_facts_llm_failure_keeps_items(client, monkeypatch):  # §7-8
     def items_ok_facts_fail(prompt_name, payload, schema, retries=1):
@@ -189,6 +243,12 @@ def test_facts_llm_failure_keeps_items(client, monkeypatch):  # §7-8
     assert body["error"]["code"] == "llm_call_failed"
     for it in body["items"]:  # 요소 판정도 실패 → 6개 모두 모호함(보류), score 6
         assert it["elements"] == {k: {"state": "모호함"} for k in ELEMENT_KEYS} and it["score"] == 6
+
+    # 질문도 LLM 실패 → 카드 5장은 전부 기본 템플릿(fallback) + error, 500 없음
+    qs = client.get(f"/sessions/{sid}/questions").json()
+    check_cards(qs)
+    assert len(qs["cards"]) == 5 and all(q["fallback"] for q in qs["cards"]) and qs["error"]["code"] == "llm_call_failed"
+    assert len(qs["cards"]) + len(qs["more"]) == 4 * 6  # 4항목 × 6요소 모두 모호함 → 후보 24개
 
 
 def test_elements_reject_not_applicable_from_llm(client, monkeypatch):
@@ -276,6 +336,39 @@ def test_call_json_retries_once_then_gives_error(monkeypatch):
     calls = install([RuntimeError("network down"), RuntimeError("network down")])
     obj, error = llm.call_json("01_items", {"sentences": []}, Out)
     assert obj is None and error["code"] == "llm_call_failed" and len(calls) == 2
+
+
+def test_forbidden_phrase_triggers_regeneration_then_template(monkeypatch):
+    """금지어가 있는 응답은 재생성(총 3회), 전부 걸리면 요소별 기본 템플릿 + fallback."""
+    from app.services import questions as qs
+
+    bad = {"step1": "회비 정산에서 실수한 적 있나요?", "step2": "그냥 처리한 적 있나요?", "step3": "사례요?"}
+    good = {"step1": "회비 정산은 언제 하시나요?", "step2": "다르게 처리한 경우가 있었나요?", "step3": "사례를 들어주세요."}
+    assert qs.has_forbidden(**bad) and not qs.has_forbidden(**good)
+    for s1 in ("A와 B 중 어느 쪽인가요?", "메일인가요 아니면 전화인가요?", "이미 하셨잖아요", "빨리 처리하는 법이 있나요?"):
+        assert qs.has_forbidden(s1, "", "")
+
+    cand = {"item": {"id": "item_01", "title": "회비 정산", "score": 3}, "element": "시기", "kind": "빈칸", "context": {}}
+    calls = []
+
+    def fake(prompt_name, payload, schema, retries=1):
+        calls.append(payload)
+        return schema_dump(schema, bad if len(calls) < 3 else good), None
+
+    monkeypatch.setattr(llm, "call_json", fake)
+    assert qs.generate_steps(cand) == (good, False, None) and len(calls) == 3  # 두 번 걸리고 세 번째 통과
+
+    monkeypatch.setattr(llm, "call_json", lambda name, payload, schema, retries=1: (schema_dump(schema, bad), None))
+    steps, fallback, error = qs.generate_steps(cand)
+    assert fallback and error["code"] == "forbidden_phrase"
+    assert steps == {"step1": "[회비 정산] 이 일은 실제로 언제쯤 시작해서 언제까지 마무리하시나요?",
+                     "step2": qs.STEP2, "step3": qs.STEP3}
+    for key in ELEMENT_KEYS:  # 모든 기본 템플릿이 금지어 필터를 통과한다
+        assert not qs.has_forbidden(**qs.template("코트 대관", key))
+
+    monkeypatch.setattr(llm, "call_json", llm_no_key)
+    steps, fallback, error = qs.generate_steps(cand)
+    assert fallback and error["code"] == "llm_no_key"
 
 
 def test_kakao_both_formats():
