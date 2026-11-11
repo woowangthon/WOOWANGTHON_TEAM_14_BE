@@ -60,7 +60,7 @@ def create_annotations(data: dict, answers: list[dict]) -> tuple[list[dict], lis
         data["answers"].append({"question_id": ans["question_id"], "text": text, "audio_url": ans.get("audio_url")})
         jobs.append((q, titles.get(q["item_id"], ""), text))
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=llm.concurrency()) as pool:
         results = list(pool.map(lambda j: _call(*j), jobs))
 
     created, first_error = [], None

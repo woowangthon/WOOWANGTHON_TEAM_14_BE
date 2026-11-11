@@ -39,6 +39,7 @@ uvicorn app.main:app --reload --port 8000
 | `LLM_API_KEY` | (없음) | 없으면 LLM 단계가 `error: llm_no_key`로 떨어지고 응답 구조는 유지된다 |
 | `LLM_MODEL` | `gpt-4o-mini` | |
 | `LLM_BASE_URL` | (없음) | OpenAI 호환 엔드포인트를 쓸 때만 |
+| `LLM_CONCURRENCY` | `4` | LLM 동시 호출 수. 무료 티어는 `1` 권장(429 방지). 429·503·타임아웃은 2→4→8초 대기 후 최대 3회 자동 재시도 |
 | `FE_ORIGIN` | `http://localhost:5173` | CORS 허용 출처, 쉼표로 여러 개. `*`는 무시 |
 | `DB_PATH` | `./data/app.db` | SQLite 경로. 디렉터리가 없으면 만든다 |
 

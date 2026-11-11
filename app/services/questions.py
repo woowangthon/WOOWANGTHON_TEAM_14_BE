@@ -136,7 +136,7 @@ def _question(n: int, c: dict, steps: dict, rank: int, fallback: bool) -> dict:
 def generate_questions(items: list[dict], doc_sentences: list[dict]) -> tuple[list[dict], Optional[dict]]:
     """카드(상위 5)만 LLM 호출, more는 템플릿. 반환: (questions(rank 순), error)."""
     cards, more = select_cards(build_candidates(items, doc_sentences))
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=llm.concurrency()) as pool:
         generated = list(pool.map(generate_steps, cards))
 
     questions, first_error = [], None

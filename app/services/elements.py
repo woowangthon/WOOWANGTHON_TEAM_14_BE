@@ -86,7 +86,7 @@ def judge_elements(items: list[dict], doc_sentences: list[dict], evidence: dict)
     """각 item의 elements·score를 채우고(제자리) 정렬은 호출자가 rank_items로 한다."""
     if not items:
         return None
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=llm.concurrency()) as pool:
         results = list(pool.map(lambda it: judge_one(it, doc_sentences, evidence.get(it["id"], [])), items))
 
     failed, first_error = [], None

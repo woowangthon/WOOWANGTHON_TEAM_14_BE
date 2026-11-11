@@ -68,7 +68,7 @@ def extract_facts(items: list[dict], chat: list[dict]) -> Optional[dict]:
     """각 item의 facts를 채운다(제자리 수정). 일부 항목이 실패해도 나머지는 채우고 error를 돌려준다."""
     if not items:
         return None
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=llm.concurrency()) as pool:
         results = list(pool.map(lambda it: _extract_one(it, chat), items))
 
     failed: list[str] = []

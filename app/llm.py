@@ -5,6 +5,7 @@ JSON 강제 → pydantic 스키마 검증 → 실패 시 retries회 재시도 �
 """
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional, Type
 
@@ -17,6 +18,8 @@ PROMPTS_DIR = BASE_DIR / "prompts"
 load_dotenv(BASE_DIR / ".env")
 
 TIMEOUT_SECONDS = 60
+RATE_RETRIES = 3  # 429/503 등 일시 오류는 2→4→8초 대기 후 최대 3회 더 시도(스키마 재시도와 별개)
+RETRY_STATUS = {429, 500, 502, 503, 504}
 PROMPT_NAMES = ("01_items", "02_facts", "03_elements", "04_questions", "05_annotations")
 
 
@@ -49,6 +52,22 @@ def model_name() -> str:
 
 def base_url() -> Optional[str]:
     return _env("LLM_BASE_URL", "OPENAI_BASE_URL") or None
+
+
+def concurrency() -> int:
+    """LLM 동시 호출 수(ThreadPool max_workers). 무료 티어는 LLM_CONCURRENCY=1 권장. 기본 4."""
+    try:
+        return max(1, int(_env("LLM_CONCURRENCY", default="4")))
+    except ValueError:
+        return 4
+
+
+def _is_transient(e: Exception) -> bool:
+    """한도(429)·과부하(503)·타임아웃처럼 잠시 뒤 다시 하면 되는 오류인가."""
+    status = getattr(e, "status_code", None)
+    if status in RETRY_STATUS:
+        return True
+    return type(e).__name__ in ("APITimeoutError", "APIConnectionError", "RateLimitError", "InternalServerError")
 
 
 def _error(code: str, message: str) -> dict:
@@ -91,7 +110,10 @@ def call_json(
     ]
 
     last = _error("llm_failed", "LLM 호출에 실패했습니다.")
-    for _ in range(1 + max(0, retries)):
+    attempts_left = 1 + max(0, retries)
+    transient_left = RATE_RETRIES
+    while attempts_left > 0:
+        attempts_left -= 1
         try:
             client = OpenAI(api_key=key, base_url=base_url(), timeout=TIMEOUT_SECONDS, max_retries=0)
             resp = client.chat.completions.create(
@@ -103,6 +125,10 @@ def call_json(
             raw = resp.choices[0].message.content or ""
         except Exception as e:  # 네트워크·인증·한도 등 SDK 예외 전부
             last = _error("llm_call_failed", f"{type(e).__name__}: {e}"[:300])
+            if _is_transient(e) and transient_left > 0:
+                time.sleep(2 ** (RATE_RETRIES - transient_left + 1))  # 2, 4, 8초
+                transient_left -= 1
+                attempts_left += 1  # 일시 오류는 시도 횟수를 소모하지 않는다
             continue
         try:
             obj = schema.model_validate(json.loads(_strip_fence(raw)))
