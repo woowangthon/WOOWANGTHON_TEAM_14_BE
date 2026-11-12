@@ -63,7 +63,7 @@ def request_kwargs(model: str, messages: list[dict]) -> dict:
     """공급자별 chat.completions 인자. OpenAI/Gemini/Groq: JSON 모드 + temperature 0. Claude: 프롬프트의 'JSON만' 지시에 의존."""
     kw = {"model": model, "messages": messages}
     if is_anthropic():
-        kw["max_tokens"] = 4096
+        kw["max_tokens"] = 8192  # 사실 추출처럼 긴 JSON이 4096에서 잘려 Unterminated string이 난 적 있음
     else:
         kw["response_format"] = {"type": "json_object"}
         kw["temperature"] = 0

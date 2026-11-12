@@ -475,6 +475,7 @@ def test_call_json_retries_once_then_gives_error(monkeypatch):
         return calls
 
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_BASE_URL", "")  # .env가 Claude 주소여도 이 테스트는 OpenAI식 인자(json_object)를 검사한다
 
     calls = install(['{"wrong": 1}', '```json\n{"items": ["가"]}\n```'])
     assert llm.call_json("01_items", {"sentences": []}, Out) == ({"items": ["가"]}, None)
