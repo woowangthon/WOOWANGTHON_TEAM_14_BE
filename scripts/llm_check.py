@@ -39,11 +39,9 @@ except Exception as e:
 def attempt(label, **kw):
     print(f"\n[{label}]")
     try:
-        r = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": "JSON으로만 답한다."},
-                      {"role": "user", "content": '{"q":"1+1은?"} → {"answer": 숫자} 형태로'}],
-            temperature=0, **kw)
+        msgs = [{"role": "system", "content": "JSON으로만 답한다."},
+                {"role": "user", "content": '{"q":"1+1은?"} → {"answer": 숫자} 형태로'}]
+        r = client.chat.completions.create(**{**llm.request_kwargs(model, msgs), **kw})
         print("OK:", (r.choices[0].message.content or "")[:200])
         return True
     except Exception as e:
@@ -58,12 +56,12 @@ def attempt(label, **kw):
         return False
 
 
-a = attempt("1. 일반 호출")
-b = attempt("2. JSON 모드 (response_format json_object)", response_format={"type": "json_object"})
+a = attempt("1. 기본 호출")
+b = attempt("2. 실제 호출과 같은 설정(request_kwargs)")
 print("\n진단:")
 if a and b:
     print("  둘 다 OK → 설정 정상. 400은 다른 원인(프롬프트 길이 등). smoke 다시 돌려보기.")
 elif a and not b:
-    print("  JSON 모드만 실패 → 이 모델/엔드포인트가 response_format을 지원하지 않음. 모델을 바꾸거나 Claude Code에 'json_object 미지원 시 프롬프트에 JSON 지시만으로 대체' 요청.")
+    print("  2번만 실패 → 설정 조합 문제. 본문 메시지를 Claude에게.")
 elif not a:
     print("  일반 호출도 실패 → 모델 이름 또는 base_url 또는 키 문제. 위 '본문'의 메시지를 그대로 Claude에게 보여주기.")

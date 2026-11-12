@@ -54,6 +54,22 @@ def base_url() -> Optional[str]:
     return _env("LLM_BASE_URL", "OPENAI_BASE_URL") or None
 
 
+def is_anthropic() -> bool:
+    """Claude API(OpenAI 호환 레이어). response_format=json_object와 temperature<1을 400으로 거부하므로 둘을 보내지 않는다."""
+    return "anthropic.com" in (base_url() or "")
+
+
+def request_kwargs(model: str, messages: list[dict]) -> dict:
+    """공급자별 chat.completions 인자. OpenAI/Gemini/Groq: JSON 모드 + temperature 0. Claude: 프롬프트의 'JSON만' 지시에 의존."""
+    kw = {"model": model, "messages": messages}
+    if is_anthropic():
+        kw["max_tokens"] = 4096
+    else:
+        kw["response_format"] = {"type": "json_object"}
+        kw["temperature"] = 0
+    return kw
+
+
 def concurrency() -> int:
     """LLM 동시 호출 수(ThreadPool max_workers). 무료 티어는 LLM_CONCURRENCY=1 권장. 기본 4."""
     try:
@@ -116,12 +132,7 @@ def call_json(
         attempts_left -= 1
         try:
             client = OpenAI(api_key=key, base_url=base_url(), timeout=TIMEOUT_SECONDS, max_retries=0)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=0,
-            )
+            resp = client.chat.completions.create(**request_kwargs(model, messages))
             raw = resp.choices[0].message.content or ""
         except Exception as e:  # 네트워크·인증·한도 등 SDK 예외 전부
             last = _error("llm_call_failed", f"{type(e).__name__}: {e}"[:300])
