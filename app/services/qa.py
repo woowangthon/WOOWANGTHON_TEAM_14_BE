@@ -5,11 +5,22 @@ from datetime import datetime, timezone
 STOPWORDS = set("은 는 이 가 을 를 의 에 에서 로 으로 와 과 도 요 어떻게 해요 하나요 뭐 어떤 언제 누구".split())
 _PUNCT = re.compile(r"[^\w\s]")  # 구두점 제거 (\w는 한글 포함)
 TOP_K = 3
+# 토큰 끝의 조사. 긴 것부터 맞춘다("으로"가 "로"보다, "에서"가 "에"보다 먼저).
+_JOSA = re.compile(r"(에서|으로|까지|부터|에게|한테|이랑|처럼|보다|에요|예요|은|는|이|가|을|를|의|에|로|와|과|도|랑|요)$")
+
+
+def _strip_josa(token: str) -> str:
+    """끝의 조사를 한 번 떼어낸다. 떼고 나서 2글자 이상 남을 때만("회의"→그대로, "회비는"→"회비")."""
+    m = _JOSA.search(token)
+    if m and m.start() >= 2:
+        return token[:m.start()]
+    return token
 
 
 def tokenize(text: str) -> set[str]:
-    """구두점 제거 → 공백 토큰화 → 조사·불용어 제거 → 길이 1 토큰 제거."""
-    return {t for t in _PUNCT.sub(" ", text or "").split() if t not in STOPWORDS and len(t) > 1}
+    """구두점 제거 → 공백 토큰화 → 불용어 제거 → 끝 조사 떼기 → 불용어·길이 1 토큰 제거. 질문·주석 양쪽에 같은 함수를 쓴다."""
+    tokens = (_strip_josa(t) for t in _PUNCT.sub(" ", text or "").split() if t not in STOPWORDS)
+    return {t for t in tokens if t not in STOPWORDS and len(t) > 1}
 
 
 def search(published: dict, question: str, top_k: int = TOP_K) -> list[dict]:

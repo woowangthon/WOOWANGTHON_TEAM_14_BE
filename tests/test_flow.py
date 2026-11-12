@@ -556,8 +556,24 @@ def test_kakao_both_formats():
 def test_qa_tokenize_and_search():
     from app.services import qa
 
-    assert qa.tokenize("회비는 언제, 어떻게 내요?") == {"회비는", "내요"}  # '언제'·'어떻게' 불용어, 구두점 제거
+    assert qa.tokenize("회비는 언제, 어떻게 내요?") == {"회비", "내요"}  # 조사 '는' 제거, '언제'·'어떻게' 불용어, 구두점 제거
     assert qa.tokenize("a 이 가 을") == set()  # 길이 1 토큰 제거
+    # 끝 조사는 한 번만, 2글자 이상 남을 때만 뗀다
+    assert qa.tokenize("회의 참가 계좌로 25일까지 누구한테 체육시설과") == {"회의", "참가", "계좌", "25일", "체육시설"}
+
+    # 조사가 붙어도 찾는다 (동결 후 버그 수정)
+    real = {"items": [
+        {"title": "회비 관리", "annotations": [
+            {"id": "an_101", "text": "회비는 매월 25일까지 동아리 계좌로 받습니다", "label": "전임경험",
+             "source": {"type": "전임답변", "ids": ["q_01"]}, "slots": {"절차": None, "예외": None, "사례": None, "연락": None, "조건": None}}]},
+        {"title": "시설 예약", "annotations": [
+            {"id": "an_102", "text": "코트 대관은 체육시설과 김 주무관님께 메일로 먼저 신청서를 보냅니다", "label": "전임경험",
+             "source": {"type": "전임답변", "ids": ["q_02"]}, "slots": {"절차": None, "예외": None, "사례": None, "연락": None, "조건": None}}]},
+    ]}
+    assert [h["annotation_id"] for h in qa.search(real, "회비 언제 내요?")] == ["an_101"]
+    assert [h["annotation_id"] for h in qa.search(real, "코트 예약은 누구한테 연락해요?")] == ["an_102"]
+    assert qa.search(real, "우주선 발사 일정") == []
+
     published = {"items": [{"title": "코트 대관", "annotations": [
         {"id": "an_001", "text": "체육시설과에 메일을 보낸다", "label": "전임경험", "source": {"type": "전임답변", "ids": ["q_01"]},
          "slots": {"절차": None, "예외": None, "사례": None, "연락": "김 주무관 전화", "조건": None}},
@@ -568,8 +584,8 @@ def test_qa_tokenize_and_search():
     assert [h["annotation_id"] for h in hits] == ["an_001"] and hits[0]["score"] == 2
     hits = qa.search(published, "코트 대관료는")  # 항목 제목(코트)으로 둘 다, '대관료는'으로 an_002가 앞
     assert [h["annotation_id"] for h in hits] == ["an_002", "an_001"]
-    hits = qa.search(published, "코트 대관료")  # 토큰 완전 일치만 본다('대관료'≠'대관료는') → 둘 다 1점, 문서 순서
-    assert [(h["annotation_id"], h["score"]) for h in hits] == [("an_001", 1), ("an_002", 1)]
+    hits = qa.search(published, "코트 대관료")  # 조사를 떼므로 '대관료'='대관료는' → an_002가 2점으로 앞
+    assert [(h["annotation_id"], h["score"]) for h in hits] == [("an_002", 2), ("an_001", 1)]
     assert qa.search(published, "우주선 발사 일정") == []
 
 

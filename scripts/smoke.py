@@ -287,20 +287,20 @@ class Smoke:
         self.checks[6] = (exact and not leaked and doc.get("notice", "").startswith(NOTICE), f"발행 {len(pub)} / 승인 {len(approved)}")
 
     def s10(self, approved: list[dict]):
-        word = ""
-        if approved:
-            toks = [t for t in re.sub(r"[^\w\s]", " ", approved[0]["text"]).split() if t not in STOPWORDS and len(t) > 1]
-            word = toks[0] if toks else ""
-        q1 = f"{word} 어떻게 해요?" if word else "회비 어떻게 해요?"
-        b1 = self.call("POST", f"/sessions/{self.sid}/ask", json={"question": q1})
+        # 후임이 실제로 칠 법한 질문 두 개. 둘 중 하나라도 hits ≥ 1이면 ✔.
+        asks = [(q, self.call("POST", f"/sessions/{self.sid}/ask", json={"question": q}))
+                for q in ("회비 언제까지 내요?", "코트 예약 누구한테 연락해요?")]
         b2 = self.call("POST", f"/sessions/{self.sid}/ask", json={"question": "우주선 발사 일정"})
-        hits = b1.get("hits", [])
+        counts = [len(b.get("hits", [])) for _, b in asks]
         none_ok = b2.get("none") is True and b2.get("hits") == []
-        self.step("10/11", "후임 Q&A", b1 if b1.get("error") else b2, f"질문 \"{q1}\" → hits {len(hits)}")
-        for h in hits:
-            self.sub(f"· {h['annotation_id']} ({h['item']} / {h['label']} / score {h['score']}) \"{h['text'][:50]}\"")
+        errored = next((b for _, b in asks if b.get("error")), None)
+        self.step("10/11", "후임 Q&A", errored or b2, f"질문 2개 → hits {counts[0]} / {counts[1]} ({'✔' if any(counts) else '✖'})")
+        for q, b in asks:
+            self.sub(f"질문 \"{q}\" → hits {len(b.get('hits', []))}")
+            for h in b.get("hits", []):
+                self.sub(f"· {h['annotation_id']} ({h['item']} / {h['label']} / score {h['score']}) \"{h['text'][:50]}\"", indent=11)
         self.sub(f"질문 \"우주선 발사 일정\" → none={b2.get('none')} {'✔' if none_ok else '✖'}")
-        self.checks[7] = (len(hits) >= 1 and none_ok, f"hits {len(hits)}, none={b2.get('none')}")
+        self.checks[7] = (any(counts) and none_ok, f"hits {counts[0]}/{counts[1]}, none={b2.get('none')}")
 
     def s11(self):
         b1 = self.call("POST", f"/sessions/{self.sid}/ask/forward", json={"question": "우주선 발사 일정"})
