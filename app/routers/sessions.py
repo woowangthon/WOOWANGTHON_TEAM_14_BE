@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from app import db
-from app.models import (ELEMENT_KEYS, AnnotationPatch, AnswersBody, AskBody, ElementClose, ItemsPatch,
+from app.models import (ELEMENT_KEYS, AnnotationPatch, AnswersBody, AskBody, ElementClose, Item, ItemsPatch,
                         SessionCreate, new_session_data)
 from app.parsers.docs import parse_doc
 from app.parsers.kakao import parse_kakao
@@ -103,8 +103,22 @@ def patch_items(session_id: str, body: ItemsPatch):
     problems: list[str] = []
     removed: set[str] = set()
 
-    # 수정 → 병합 → 삭제 순서로 적용한다.
+    # 추가 → 수정 → 병합 → 삭제 순서로 적용한다.
     for p in body.items:
+        if p.id:
+            continue
+        if not (p.title and p.title.strip()):
+            problems.append("새 항목: title이 비어 있음")
+            continue
+        n = max((int(i["id"].split("_")[1]) for i in data["items"] if i["id"].startswith("item_")), default=0) + 1
+        new = Item(id=f"item_{n:02d}", title=p.title.strip(), keywords=items_service.clean_keywords(p.keywords or [])).model_dump(exclude_none=True)
+        data["items"].append(new)
+        by_id[new["id"]] = new
+        evidence[new["id"]] = []  # 사람이 추가한 항목: 문서 근거 없음. 키워드가 없으면 chat에서 사실이 안 잡히므로 FE가 키워드 입력을 받는 것이 좋다
+
+    for p in body.items:
+        if not p.id:
+            continue
         item = by_id.get(p.id)
         if item is None:
             problems.append(f"{p.id}: 없는 항목")
@@ -115,7 +129,7 @@ def patch_items(session_id: str, body: ItemsPatch):
             item["keywords"] = items_service.clean_keywords(p.keywords)
 
     for p in body.items:
-        if not p.merge_into or p.id not in by_id:
+        if not p.id or not p.merge_into or p.id not in by_id:
             continue
         target = by_id.get(p.merge_into)
         if target is None or p.merge_into == p.id or p.merge_into in removed or p.id in removed:

@@ -89,7 +89,7 @@ class SessionCreate(BaseModel):
 
 
 class ItemPatch(BaseModel):
-    id: str
+    id: Optional[str] = None  # 없으면 새 항목 추가(title 필수). 전임이 AI가 놓친 업무를 직접 넣는 용도
     title: Optional[str] = None
     keywords: Optional[list[str]] = None
     merge_into: Optional[str] = None

@@ -53,7 +53,7 @@ uvicorn app.main:app --reload --port 8000
 |---|---|---|---|---|
 | 1 | POST | `/sessions` | `{club_name, giver, receiver}` | `{session_id}` |
 | 2 | POST | `/sessions/{id}/docs` | multipart `file`(PDF/TXT) | `{items: Item[], error?}` (facts 비어 있음) |
-| 3 | PATCH | `/sessions/{id}/items` | `{items:[{id, title?, keywords?, merge_into?, delete?}]}` | `{items, error?}` |
+| 3 | PATCH | `/sessions/{id}/items` | `{items:[{id?, title?, keywords?, merge_into?, delete?}]}` | `{items, error?}` — **`id` 없이 `title`(+`keywords`)을 보내면 새 항목 추가**(item_NN, 문서 근거 없음·facts 비어 있음; chat 전에 추가해야 사실이 잡힘) |
 | 4 | POST | `/sessions/{id}/chat` | multipart `file`(카톡 txt) | `{items: Item[], chat_count, error?}` (facts·elements·score 채움, score 내림차순 정렬) |
 | 5 | PATCH | `/sessions/{id}/items/{item_id}/elements/{key}` | `{state:"해당없음", closed_by:"전임"\|"후임"}` | `{item, error?}` (score 재계산) |
 | 6 | GET | `/sessions/{id}/questions` | — | `{cards: Question[≤5], more: Question[], error?}` (최초 호출 시 생성·저장) |

@@ -437,6 +437,19 @@ def test_full_flow_real_llm(client):
     assert qa == {"hits": [], "summary": None, "none": True}
 
 
+def test_patch_items_can_add_new_item(client):
+    """id 없이 title(+keywords)을 보내면 새 항목이 item_NN으로 추가된다. title 없으면 error만."""
+    sid = new_session(client)
+    r = client.patch(f"/sessions/{sid}/items", json={"items": [{"title": "장비 관리", "keywords": ["라켓", "공", "라켓"]}]}).json()
+    assert "error" not in r and len(r["items"]) == 1
+    it = r["items"][0]
+    assert it["id"] == "item_01" and it["title"] == "장비 관리" and it["keywords"] == ["라켓", "공"] and it["facts"] == [] and it["score"] == 0
+    r = client.patch(f"/sessions/{sid}/items", json={"items": [{"title": "회비"}, {"id": "item_01", "title": "장비·비품 관리"}]}).json()
+    assert [i["id"] for i in r["items"]] == ["item_01", "item_02"] and r["items"][0]["title"] == "장비·비품 관리"
+    r = client.patch(f"/sessions/{sid}/items", json={"items": [{"keywords": ["x"]}]}).json()
+    assert r["error"]["code"] == "item_patch_partial" and len(r["items"]) == 2
+
+
 def test_session_not_found(client):
     r = client.patch("/sessions/nope/items", json={"items": []})
     assert r.status_code == 404
