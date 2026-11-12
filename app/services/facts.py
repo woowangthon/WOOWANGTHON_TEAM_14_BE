@@ -8,6 +8,7 @@ from app import llm
 from app.models import Fact, Source
 
 CONTEXT = 2  # 키워드가 걸린 메시지의 앞뒤 몇 개까지 함께 넘길지
+FACTS_CHUNK = 40  # 한 번에 넘기는 메시지 수. 이보다 많으면 나눠 부른다(긴 응답이 잘려 JSON이 깨지는 것 방지)
 
 
 class _LLMFact(BaseModel):
@@ -54,14 +55,20 @@ def _extract_one(item: dict, chat: list[dict]) -> tuple[list[dict], Optional[dic
     messages = filter_messages(chat, item.get("keywords", []))
     if not messages:
         return [], None  # 관련 메시지가 없으면 LLM을 부르지 않는다
-    payload = {
-        "item": item["title"],
-        "messages": [{k: m[k] for k in ("id", "date", "speaker", "text")} for m in messages],
-    }
-    obj, error = llm.call_json("02_facts", payload, _LLMFacts)
-    if obj is None:
-        return [], error
-    return postprocess(obj["facts"], {m["id"] for m in messages}), None
+    facts: list[dict] = []
+    first_error: Optional[dict] = None
+    for start in range(0, len(messages), FACTS_CHUNK):
+        chunk = messages[start:start + FACTS_CHUNK]
+        payload = {
+            "item": item["title"],
+            "messages": [{k: m[k] for k in ("id", "date", "speaker", "text")} for m in chunk],
+        }
+        obj, error = llm.call_json("02_facts", payload, _LLMFacts)
+        if obj is None:
+            first_error = first_error or error  # 한 묶음이 실패해도 나머지 묶음의 사실은 살린다
+            continue
+        facts += postprocess(obj["facts"], {m["id"] for m in chunk})  # 출처 검증은 그 묶음에 넘긴 id로
+    return facts, first_error
 
 
 def extract_facts(items: list[dict], chat: list[dict]) -> Optional[dict]:

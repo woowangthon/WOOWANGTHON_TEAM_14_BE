@@ -589,6 +589,35 @@ def test_qa_tokenize_and_search():
     assert qa.search(published, "우주선 발사 일정") == []
 
 
+def test_facts_chunked_when_many_messages(monkeypatch):
+    """메시지가 40개를 넘으면 40개 단위로 나눠 부르고 facts를 이어 붙인다. 출처 검증은 묶음별."""
+    from app.services import facts as fs
+
+    chat = [{"idx": i, "id": f"chat#{i}", "date": "2026-04-20", "speaker": "총무", "text": f"회비 안내 {i}"} for i in range(1, 91)]
+    sizes = []
+
+    def fake(prompt_name, payload, schema, retries=1):
+        msgs = payload["messages"]
+        sizes.append(len(msgs))
+        if len(sizes) == 2:  # 둘째 묶음은 실패 → 나머지 묶음은 살아야 한다
+            return None, {"code": "llm_schema_invalid", "message": "Unterminated string"}
+        facts = [{"text": f"사실 {msgs[0]['id']}", "source_ids": [msgs[0]["id"]]},
+                 {"text": "다른 묶음의 id를 인용", "source_ids": ["chat#45"]}]  # 첫·셋째 묶음엔 chat#45가 없다 → 폐기
+        return schema_dump(schema, {"facts": facts}), None
+
+    monkeypatch.setattr(llm, "call_json", fake)
+    item = {"id": "item_01", "title": "회비", "keywords": ["회비"], "facts": []}
+    error = fs.extract_facts([item], chat)
+    assert sizes == [40, 40, 10]
+    assert [f["source"]["ids"] for f in item["facts"]] == [["chat#1"], ["chat#81"]]
+    assert [f["id"] for f in item["facts"]] == ["fact_001", "fact_002"]
+    assert error["code"] == "llm_schema_invalid"
+
+    sizes.clear()
+    monkeypatch.setattr(llm, "call_json", lambda n, p, s, retries=1: (sizes.append(len(p["messages"])) or schema_dump(s, {"facts": []}), None))
+    assert fs.extract_facts([item], chat[:40]) is None and sizes == [40]  # 40개 이하면 한 번만
+
+
 def test_keyword_filter_window():
     chat = [{"id": f"chat#{i}", "text": t} for i, t in enumerate(
         ["a", "b", "c", "회비 냈어요", "e", "f", "g", "h", "코트 예약", "j"], start=1)]
