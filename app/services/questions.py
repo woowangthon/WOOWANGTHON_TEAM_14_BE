@@ -10,6 +10,7 @@ from app.models import ELEMENT_KEYS, Question
 
 CARD_COUNT = 5
 PER_ITEM_MAX = 2
+CONFIRM_MAX = 2  # 카드 5장 중 kind="확인"(추정 fact)의 최대 장수
 LLM_ATTEMPTS = 3  # 금지어에 걸리면 재생성, 총 3회
 
 # §6 금지어 정규식 5개 (그대로)
@@ -94,12 +95,19 @@ def build_candidates(items: list[dict], doc_sentences: list[dict]) -> list[dict]
 
 
 def select_cards(cands: list[dict]) -> tuple[list[dict], list[dict]]:
-    """후보 순서대로 rank 1~5(항목당 최대 2장), 나머지는 rank 6부터."""
-    cards, more, per_item = [], [], {}
+    """후보 순서대로 rank 1~5(항목당 최대 2장), 나머지는 rank 6부터.
+
+    kind="확인"(추정 fact) 카드는 5장 중 최대 2장. 넘치는 확인 후보는 more로 보낸다(우선순위는 그대로).
+    추정 사실이 많은 실제 대화에서 카드가 전부 '시기/확인'으로 채워지는 것을 막는다.
+    """
+    cards, more, per_item, confirms = [], [], {}, 0
     for c in cands:
         item_id = c["item"]["id"]
-        if len(cards) < CARD_COUNT and per_item.get(item_id, 0) < PER_ITEM_MAX:
+        is_confirm = c["kind"] == "확인"
+        if (len(cards) < CARD_COUNT and per_item.get(item_id, 0) < PER_ITEM_MAX
+                and not (is_confirm and confirms >= CONFIRM_MAX)):
             per_item[item_id] = per_item.get(item_id, 0) + 1
+            confirms += is_confirm
             cards.append(c)
         else:
             more.append(c)

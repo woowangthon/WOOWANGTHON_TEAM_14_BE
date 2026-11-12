@@ -492,6 +492,29 @@ def test_call_json_retries_once_then_gives_error(monkeypatch):
     assert obj is None and error["code"] == "llm_call_failed" and len(calls) == 2
 
 
+def test_confirm_cards_capped_at_two():
+    """확인(추정 fact) 후보 5개 + 빈칸 후보 3개 → 카드에 확인은 최대 2장, 넘친 확인은 more로."""
+    from app.services import questions as qs
+
+    full = {k: {"state": "있음", "fill": "확인됨"} for k in ELEMENT_KEYS}
+    est = lambda n: [{"id": f"fact_{n:03d}", "text": f"추정 사실 {n}", "date": "2026-05-12", "status": "추정"}]  # noqa: E731
+    items = [{"id": f"item_{n:02d}", "title": f"업무{n}", "score": 3, "facts": est(n), "elements": dict(full)} for n in range(1, 6)]
+    items += [{"id": f"item_{n:02d}", "title": f"업무{n}", "score": 1, "facts": [],
+               "elements": {**full, "배경": {"state": "모호함"}}} for n in range(6, 9)]
+
+    cands = qs.build_candidates(items, [])
+    assert [c["kind"] for c in cands] == ["확인"] * 5 + ["빈칸"] * 3  # 우선순위(둘 다 1)·score 순서는 그대로
+
+    cards, more = qs.select_cards(cands)
+    assert [(c["item"]["id"], c["kind"]) for c in cards] == [
+        ("item_01", "확인"), ("item_02", "확인"), ("item_06", "빈칸"), ("item_07", "빈칸"), ("item_08", "빈칸")]
+    assert [(c["item"]["id"], c["kind"]) for c in more] == [("item_03", "확인"), ("item_04", "확인"), ("item_05", "확인")]
+
+    # 확인 후보만 있을 때도 2장까지만 카드가 된다(빈자리를 확인으로 채우지 않는다)
+    cards, more = qs.select_cards(cands[:5])
+    assert len(cards) == 2 and len(more) == 3
+
+
 def test_forbidden_phrase_triggers_regeneration_then_template(monkeypatch):
     """금지어가 있는 응답은 재생성(총 3회), 전부 걸리면 요소별 기본 템플릿 + fallback."""
     from app.services import questions as qs
