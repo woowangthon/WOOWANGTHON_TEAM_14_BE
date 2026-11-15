@@ -450,6 +450,71 @@ def test_patch_items_can_add_new_item(client):
     assert r["error"]["code"] == "item_patch_partial" and len(r["items"]) == 2
 
 
+def tiny_pdf(text: str) -> bytes:
+    """텍스트 한 줄짜리 PDF(ASCII). 외부 패키지 없이 만든다."""
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out, offsets = b"%PDF-1.4\n", []
+    for n, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % n + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1) + b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+
+
+def test_docs_accepts_multiple_files(client, monkeypatch):
+    """API 2: 파일 여러 개(file 반복 또는 files)를 올린 순서대로 이어 붙여 doc#1부터 번호를 매긴다.
+    일부만 못 읽으면 나머지로 진행 + doc_parse_partial, 전부 못 읽으면 doc_parse_failed(기존 항목 유지)."""
+    seen = []
+
+    def spy(prompt_name, payload, schema, retries=1):
+        if prompt_name == "01_items":
+            seen.append(payload["sentences"])
+        return fake_call_json(prompt_name, payload, schema, retries)
+
+    monkeypatch.setattr(llm, "call_json", spy)
+    sid = new_session(client)
+    rules = (FIXTURES / "rules.txt").read_bytes()  # 10문장
+    extra = "제7조(장비) 라켓과 공은 총무가 관리한다.\n제8조(총회) 총회는 학기마다 연다.\n".encode()
+
+    # file 필드 반복: TXT + PDF + TXT
+    r = client.post(f"/sessions/{sid}/docs", files=[("file", ("rules.txt", rules, "text/plain")),
+                                                    ("file", ("notice.pdf", tiny_pdf("Court booking notice 2026"), "application/pdf")),
+                                                    ("file", ("extra.txt", extra, "text/plain"))])
+    body = r.json()
+    assert r.status_code == 200 and "error" not in body and len(body["items"]) == 4
+    sent = seen[-1]
+    assert [s["id"] for s in sent] == [f"doc#{i}" for i in range(1, 14)]  # 10 + 1 + 2, 번호가 이어진다
+    assert sent[0]["text"].startswith("제1조") and "Court booking notice 2026" in sent[10]["text"]
+    assert sent[11]["text"].startswith("제7조") and sent[12]["text"].startswith("제8조")
+
+    # files 필드도 받는다. 깨진 PDF는 건너뛰고 error로 알린다
+    r = client.post(f"/sessions/{sid}/docs", files=[("files", ("extra.txt", extra, "text/plain")),
+                                                    ("files", ("broken.pdf", b"not a pdf", "application/pdf")),
+                                                    ("files", ("rules.txt", rules, "text/plain"))])
+    body = r.json()
+    assert r.status_code == 200 and body["error"]["code"] == "doc_parse_partial" and "broken.pdf" in body["error"]["message"]
+    assert len(seen[-1]) == 12 and seen[-1][0]["text"].startswith("제7조") and len(body["items"]) == 4
+
+    # 전부 못 읽으면 기존 항목을 그대로 둔다
+    calls = len(seen)
+    r = client.post(f"/sessions/{sid}/docs", files=[("file", ("a.hwp", b"x", "application/octet-stream")),
+                                                    ("file", ("broken.pdf", b"not a pdf", "application/pdf"))])
+    body = r.json()
+    assert r.status_code == 200 and body["error"]["code"] == "doc_parse_failed"
+    assert "a.hwp" in body["error"]["message"] and "broken.pdf" in body["error"]["message"]
+    assert len(body["items"]) == 4 and len(seen) == calls
+
+    # 파일 없이 호출
+    r = client.post(f"/sessions/{sid}/docs")
+    assert r.status_code == 200 and r.json()["error"]["code"] == "no_file"
+
+
 def test_session_not_found(client):
     r = client.patch("/sessions/nope/items", json={"items": []})
     assert r.status_code == 404

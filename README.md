@@ -52,7 +52,7 @@ uvicorn app.main:app --reload --port 8000
 | # | 메서드 | 경로 | 요청 | 응답 |
 |---|---|---|---|---|
 | 1 | POST | `/sessions` | `{club_name, giver, receiver}` | `{session_id}` |
-| 2 | POST | `/sessions/{id}/docs` | multipart `file`(PDF/TXT) | `{items: Item[], error?}` (facts 비어 있음) |
+| 2 | POST | `/sessions/{id}/docs` | multipart `file`(PDF/TXT) — **`file` 필드를 반복하거나 `files` 필드로 여러 개를 한 번에** 올릴 수 있음(1개도 그대로) | `{items: Item[], error?}` (facts 비어 있음). 올린 순서대로 문장을 이어 붙여 `doc#1`부터 번호를 매김. 일부만 못 읽으면 나머지로 진행 + `doc_parse_partial`, 전부 못 읽으면 `doc_parse_failed`(기존 항목 유지). 다시 호출하면 이전 문서·항목을 **대체**함 |
 | 3 | PATCH | `/sessions/{id}/items` | `{items:[{id?, title?, keywords?, merge_into?, delete?}]}` | `{items, error?}` — **`id` 없이 `title`(+`keywords`)을 보내면 새 항목 추가**(item_NN, 문서 근거 없음·facts 비어 있음; chat 전에 추가해야 사실이 잡힘) |
 | 4 | POST | `/sessions/{id}/chat` | multipart `file`(카톡 txt) | `{items: Item[], chat_count, error?}` (facts·elements·score 채움, score 내림차순 정렬) |
 | 5 | PATCH | `/sessions/{id}/items/{item_id}/elements/{key}` | `{state:"해당없음", closed_by:"전임"\|"후임"}` | `{item, error?}` (score 재계산) |
@@ -66,7 +66,7 @@ uvicorn app.main:app --reload --port 8000
 
 규칙·세부:
 - 에러는 항상 본문의 `{"error": {"code": str, "message": str}}`. HTTP는 200 유지, **세션 없음만 404**. 예상 못 한 예외도 `code: "INTERNAL"`로 200.
-- 주요 error code: `llm_no_key`, `llm_call_failed`, `llm_schema_invalid`, `doc_parse_failed`, `no_file`, `no_items`, `item_not_found`, `invalid_element_key`, `annotation_not_found`, `answers_partial`, `forbidden_phrase`, `NOT_PUBLISHED`, `invalid_request`, `INTERNAL`.
+- 주요 error code: `llm_no_key`, `llm_call_failed`, `llm_schema_invalid`, `doc_parse_failed`, `doc_parse_partial`, `no_file`, `no_items`, `item_not_found`, `invalid_element_key`, `annotation_not_found`, `answers_partial`, `forbidden_phrase`, `NOT_PUBLISHED`, `invalid_request`, `INTERNAL`.
 - 값이 없는 선택 필드(`date`, `label`, `fill`, `evidence`, `closed_by`, `fallback`)는 `null`이 아니라 **키가 빠진다**. 단 `slots`의 빈 슬롯은 `null`로 들어간다.
 - id 형식: 항목 `item_01`, 사실 `fact_001`, 질문 `q_01`, 주석 `an_001`(전역 증가, 재사용 없음), 문서 문장 `doc#1`, 대화 메시지 `chat#1`.
 - **optional 추가 필드(B 전달)**: `Question.fallback?: true`(LLM 실패·금지어로 기본 템플릿을 쓴 질문; `more`는 전부 템플릿), API 7 응답의 `skipped`.
@@ -80,6 +80,8 @@ uvicorn app.main:app --reload --port 8000
 ```bash
 curl -X POST localhost:8000/sessions -H "Content-Type: application/json" -d '{"club_name":"테니스 동아리","giver":"민서","receiver":"수아"}'
 curl -X POST localhost:8000/sessions/{id}/docs -F "file=@fixtures/demo/rules.txt"
+# 여러 개를 한 번에: file 필드를 반복
+curl -X POST localhost:8000/sessions/{id}/docs -F "file=@회칙.pdf" -F "file=@공지.pdf" -F "file=@fixtures/rules.txt"
 curl -X POST localhost:8000/sessions/{id}/chat -F "file=@fixtures/demo/kakao.txt"
 curl localhost:8000/sessions/{id}/questions
 curl -X POST localhost:8000/sessions/{id}/answers -H "Content-Type: application/json" -d '{"answers":[{"question_id":"q_01","text":"매월 25일까지 계좌로 받고 미납자는 개별로 연락합니다."}]}'
@@ -148,5 +150,5 @@ render.yaml          Render Blueprint
 - `summary`는 항상 `null`(AI 요약 미구현, 범위 밖). 임베딩 검색 없음 — Q&A는 토큰 교집합이다. 토큰 끝의 조사(은·는·까지·한테 등)는 한 번 떼고 비교하지만("회비는"="회비"), 활용형·동의어("예약"↔"대관", "연락해요"↔"연락합니다")는 맞추지 못한다.
 - 세션 1개가 JSON 1행이고 **동시 사용자를 고려하지 않았다**(같은 세션을 둘이 동시에 수정하면 늦게 저장한 쪽이 덮어쓴다). Render 무료 플랜은 재배포 시 디스크가 초기화되어 SQLite가 비워진다.
 - 인증 없음: `session_id`를 아는 사람은 누구나 읽고 쓸 수 있다.
-- 다중 파일 업로드·HWP·음성 STT 없음. 스캔본 PDF(텍스트 없는 PDF)는 `doc_parse_failed`.
+- 문서(API 2)는 여러 파일을 한 번에 올릴 수 있지만 대화(API 4)는 1개만. HWP·음성 STT 없음. 스캔본 PDF(텍스트 없는 PDF)는 `doc_parse_failed`.
 - 기능 동결(11/13) 이후에는 버그 수정과 에러 응답 통일만 한다.

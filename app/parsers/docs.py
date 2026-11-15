@@ -42,3 +42,20 @@ def parse_doc(filename: str, data: bytes) -> list[dict]:
     if not sentences:
         raise ValueError("문서에서 텍스트를 찾지 못했습니다(스캔본 PDF는 지원하지 않습니다).")
     return [{"id": f"doc#{i}", "text": s} for i, s in enumerate(sentences, start=1)]
+
+
+def parse_docs(files: list[tuple[str, bytes]]) -> tuple[list[dict], list[str]]:
+    """여러 파일을 올린 순서대로 읽어 문장을 이어 붙이고 doc#1부터 다시 번호를 매긴다.
+
+    반환: (sentences, problems). 읽지 못한 파일은 건너뛰고 problems에 "파일명: 이유"로 남긴다.
+    """
+    texts: list[str] = []
+    problems: list[str] = []
+    for filename, data in files:
+        try:
+            texts += [s["text"] for s in parse_doc(filename, data)]
+        except ValueError as e:
+            problems.append(f"{filename or '(이름 없음)'}: {e}")
+        except Exception as e:  # noqa: BLE001 — 깨진 PDF 등
+            problems.append(f"{filename or '(이름 없음)'}: 문서를 읽지 못했습니다({type(e).__name__})")
+    return [{"id": f"doc#{i}", "text": t} for i, t in enumerate(texts, start=1)], problems

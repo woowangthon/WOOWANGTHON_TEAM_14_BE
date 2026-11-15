@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from app import db
 from app.models import (ELEMENT_KEYS, AnnotationPatch, AnswersBody, AskBody, ElementClose, Item, ItemsPatch,
                         SessionCreate, new_session_data)
-from app.parsers.docs import parse_doc
+from app.parsers.docs import parse_docs
 from app.parsers.kakao import parse_kakao
 from app.services import annotations as annotations_service
 from app.services import elements as elements_service
@@ -63,24 +63,28 @@ def create_session(body: SessionCreate):
 # 2
 @router.post("/{session_id}/docs")
 @guarded
-def upload_docs(session_id: str, file: Optional[UploadFile] = File(None)):
+def upload_docs(session_id: str, file: Optional[list[UploadFile]] = File(None),
+                files: Optional[list[UploadFile]] = File(None)):
+    """파일 여러 개를 한 번에 받는다: multipart에 `file` 필드를 반복하거나 `files` 필드를 쓴다(1개도 그대로 동작).
+    올린 순서대로 문장을 이어 붙여 doc#1부터 번호를 매긴다. 일부만 읽지 못하면 나머지로 진행하고 error로 알린다."""
     data = db.get_session(session_id)
     if data is None:
         return _not_found(session_id)
-    if file is None:
+    uploads = (file or []) + (files or [])
+    if not uploads:
         return {"items": data["items"], "error": _err("no_file", "file 필드에 PDF 또는 TXT를 올려주세요.")}
 
-    try:
-        sentences = parse_doc(file.filename or "", file.file.read())
-    except ValueError as e:
-        return {"items": data["items"], "error": _err("doc_parse_failed", str(e))}
-    except Exception as e:  # 깨진 PDF 등
-        return {"items": data["items"], "error": _err("doc_parse_failed", f"문서를 읽지 못했습니다: {type(e).__name__}")}
+    sentences, problems = parse_docs([(u.filename or "", u.file.read()) for u in uploads])
+    if not sentences:  # 전부 실패: 기존 항목은 건드리지 않는다
+        message = problems[0].split(": ", 1)[1] if len(uploads) == 1 else "; ".join(problems)
+        return {"items": data["items"], "error": _err("doc_parse_failed", message)}
 
     try:
         items, evidence, error = items_service.extract_items(sentences)
     except Exception as e:
         items, evidence, error = [], {}, _err("items_failed", f"{type(e).__name__}: {e}")
+    if problems and not error:
+        error = _err("doc_parse_partial", "일부 파일을 읽지 못해 제외했습니다 — " + "; ".join(problems))
 
     # 문서를 새로 올리면 항목부터 다시 만든다.
     data["doc_sentences"] = sentences
